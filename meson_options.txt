@@ -13,3 +13,9 @@ option('systemduserunitdir',
   type: 'string',
   description: 'Directory for systemd user service files'
 )
+
+option('certificate',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Enable the experimental Certificate1 portal'
+)

@@ -63,6 +63,9 @@
 #include "dynamic-launcher.h"
 #include "notification.h"
 #include "usb.h"
+#ifdef HAVE_CERTIFICATE
+#include "certificate.h"
+#endif
 
 static GMainLoop *loop = NULL;
 static GHashTable *outstanding_handles = NULL;
@@ -119,6 +122,14 @@ on_bus_acquired (GDBusConnection *connection,
       g_warning ("error: %s\n", error->message);
       g_clear_error (&error);
     }
+
+#ifdef HAVE_CERTIFICATE
+  if (!certificate_init (connection, &error))
+    {
+      g_warning ("Certificate portal initialization failed: %s", error->message);
+      g_clear_error (&error);
+    }
+#endif
 
   if (settings_only)
     return;
@@ -259,6 +270,10 @@ main (int argc, char *argv[])
   g_autoptr(GError) error = NULL;
   GDBusConnection  *session_bus;
   g_autoptr(GSource) signal_handler_source = NULL;
+#ifdef HAVE_CERTIFICATE
+  g_autoptr(GSource) terminate_source = NULL;
+  g_autoptr(GSource) interrupt_source = NULL;
+#endif
   g_autoptr(GOptionContext) context = NULL;
 
   setlocale (LC_ALL, "");
@@ -326,6 +341,16 @@ main (int argc, char *argv[])
   g_source_set_callback (signal_handler_source, G_SOURCE_FUNC (signal_handler_cb), NULL, NULL);
   g_source_attach (signal_handler_source, g_main_loop_get_context (loop));
 
+#ifdef HAVE_CERTIFICATE
+  /* Embedded Certificate workers/UI must drain on normal termination too. */
+  terminate_source = g_unix_signal_source_new (SIGTERM);
+  g_source_set_callback (terminate_source, G_SOURCE_FUNC (signal_handler_cb), NULL, NULL);
+  g_source_attach (terminate_source, g_main_loop_get_context (loop));
+  interrupt_source = g_unix_signal_source_new (SIGINT);
+  g_source_set_callback (interrupt_source, G_SOURCE_FUNC (signal_handler_cb), NULL, NULL);
+  g_source_attach (interrupt_source, g_main_loop_get_context (loop));
+#endif
+
   outstanding_handles = g_hash_table_new (g_str_hash, g_str_equal);
 
   owner_id = g_bus_own_name (G_BUS_TYPE_SESSION,
@@ -341,6 +366,10 @@ main (int argc, char *argv[])
     adw_init ();
 
   g_main_loop_run (loop);
+
+#ifdef HAVE_CERTIFICATE
+  certificate_shutdown ();
+#endif
 
   g_bus_unown_name (owner_id);
 

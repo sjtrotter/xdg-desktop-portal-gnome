@@ -14,7 +14,12 @@ desktop_portal_interfaces_dir = xdg_desktop_portal_dep.get_variable(
 
 desktop_portal_dbus_interfaces_files = []
 foreach intf: desktop_portal_dbus_interfaces
-  desktop_portal_dbus_interfaces_files += [desktop_portal_interfaces_dir / '@0@.xml'.format(intf)]
+  if intf == 'org.freedesktop.impl.portal.experimental.Certificate1'
+    # Experimental: not yet installed by xdg-desktop-portal-devel.
+    desktop_portal_dbus_interfaces_files += files('../data/' + intf + '.xml')
+  else
+    desktop_portal_dbus_interfaces_files += [desktop_portal_interfaces_dir / '@0@.xml'.format(intf)]
+  endif
 endforeach
 
 built_sources = gnome.gdbus_codegen(
@@ -56,6 +61,7 @@ built_sources += gnome.compile_resources(
 
 # config.h
 config_h = configuration_data()
+config_h.set('HAVE_CERTIFICATE', certificate_enabled)
 config_h.set_quoted('GETTEXT_PACKAGE', meson.project_name())
 config_h.set_quoted('LOCALEDIR', prefix / get_option('localedir'))
 config_h.set_quoted('PACKAGE_NAME', meson.project_name())
@@ -132,6 +138,16 @@ sources = built_sources + files(
   'wallpaper.c',
   'xdg-desktop-portal-gnome.c',
 )
+
+if certificate_enabled
+  deps += [certificate_dep]
+  sources += files('certificate.c', 'certificatedialog.c', 'certificatepindialog.c')
+  sources += gnome.compile_resources(
+    'certificate-resources',
+    'certificate.gresource.xml',
+    c_name: '_certificate',
+  )
+endif
 
 common_flags = []
 

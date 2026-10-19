@@ -32,6 +32,9 @@ if dbus_service_dir == ''
   dbus_service_dir = datadir / 'dbus-1' / 'services'
 endif
 
+certificate_dep = dependency('xdp-certificate-core-0', required: get_option('certificate'))
+certificate_enabled = certificate_dep.found()
+
 subdir('data')
 subdir('po')
 subdir('src')

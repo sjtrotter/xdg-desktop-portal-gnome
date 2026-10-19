@@ -6,6 +6,10 @@ src/accountdialog.ui
 src/appchooserdialog.c
 src/appchooserdialog.ui
 src/background.c
+src/certificatedialog.c
+src/certificatedialog.ui
+src/certificatepindialog.c
+src/certificatepindialog.ui
 src/dynamic-launcher.c
 src/filechooser.c
 src/globalshortcuts.c

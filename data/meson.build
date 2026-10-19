@@ -24,6 +24,9 @@ gnome_portal_interfaces = [
   'org.freedesktop.impl.portal.Usb',
   'org.freedesktop.impl.portal.Wallpaper',
 ]
+if certificate_enabled
+  gnome_portal_interfaces += ['org.freedesktop.impl.portal.experimental.Certificate1']
+endif
 gnome_portal_conf = configuration_data()
 gnome_portal_conf.set('PORTALS', ';'.join(gnome_portal_interfaces))
 
