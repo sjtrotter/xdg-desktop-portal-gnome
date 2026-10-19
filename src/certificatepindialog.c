@@ -77,7 +77,7 @@ pin_message (CertificatePinDialog *self)
   if (self->status != NULL && *self->status)
     return self->status;
   if (self->final_try)
-    return _("Last attempt. Another wrong PIN locks the token.");
+    return _("Another wrong PIN locks the token.");
   if (self->count_low)
     return _("A wrong PIN was entered before. Few attempts may remain.");
   return "";
@@ -286,7 +286,9 @@ certificate_pin_dialog_update (CertificatePinDialog *self,
     (view->display_flags & XCC_DISPLAY_CALLER_FALLBACK);
   token = token_fallback || !view->token_label || !*view->token_label ? _("Unnamed token") : view->token_label;
   caller = caller_fallback || !view->caller_display || !*view->caller_display ? _("An unknown app") : view->caller_display;
-  heading = view->protected_path ?
+  heading = view->locked ? _("PIN locked") : view->final_try ?
+    (view->protected_path ? _("Last PIN attempt on the reader") : _("Last PIN attempt")) :
+    view->protected_path ?
     (view->context_specific ? _("Enter your PIN again on the reader") : _("Enter your PIN on the reader")) :
     (view->context_specific ? _("Enter your PIN again") : _("Enter your PIN"));
   description = translated_body (view, caller);
@@ -337,6 +339,7 @@ certificate_pin_dialog_warning (CertificatePinDialog *self,
     }
   self->warning_id = warning->warning_id;
   self->final_try = TRUE;
+  gtk_label_set_text (self->heading, self->locked ? _("PIN locked") : _("Last PIN attempt on the reader"));
   if (self->system)
     {
       if (self->prompt == NULL || self->prompter_closed || self->round_pending)
