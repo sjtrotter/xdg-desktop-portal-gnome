@@ -1,131 +1,88 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <interface domain="xdg-desktop-portal-gnome">
   <template class="CertificateDialog" parent="AdwWindow">
-    <property name="title" translatable="yes">Choose a Certificate</property>
-    <property name="default-width">560</property>
-    <property name="default-height">620</property>
+    <property name="title" translatable="yes">Choose Certificate</property>
+    <property name="default-width">480</property>
+    <property name="resizable">False</property>
     <property name="modal">True</property>
-    <child>
-      <object class="GtkShortcutController">
-        <child><object class="GtkShortcut">
-          <property name="trigger">Escape</property>
-          <property name="action">action(window.close)</property>
+    <child><object class="GtkShortcutController">
+      <child><object class="GtkShortcut">
+        <property name="trigger">Escape</property>
+        <property name="action">action(window.close)</property>
+      </object></child>
+    </object></child>
+    <property name="content"><object class="AdwToolbarView">
+      <child type="top"><object class="AdwHeaderBar">
+        <property name="show-start-title-buttons">False</property>
+        <property name="show-end-title-buttons">False</property>
+        <child><object class="GtkButton" id="cancel">
+          <property name="label" translatable="yes">_Cancel</property>
+          <property name="use-underline">True</property>
+          <signal name="clicked" handler="cancel_clicked" swapped="yes"/>
         </object></child>
-      </object>
-    </child>
-    <property name="content">
-      <object class="AdwToolbarView">
-        <child type="top">
-          <object class="AdwHeaderBar">
-            <property name="show-start-title-buttons">False</property>
-            <property name="show-end-title-buttons">False</property>
-            <child><object class="GtkButton" id="cancel">
-              <property name="label" translatable="yes">_Cancel</property>
-              <property name="use-underline">True</property>
-              <signal name="clicked" handler="cancel_clicked" swapped="yes"/>
-            </object></child>
-            <child type="end"><object class="GtkButton" id="accept">
-              <property name="label" translatable="yes">_Allow</property>
-              <property name="use-underline">True</property>
-              <property name="sensitive">False</property>
-              <style><class name="suggested-action"/></style>
-              <signal name="clicked" handler="accept_clicked" swapped="yes"/>
-            </object></child>
-          </object>
-        </child>
-        <property name="content">
-          <object class="GtkScrolledWindow">
-            <property name="hscrollbar-policy">never</property>
-            <property name="child">
-              <object class="GtkBox">
-                <property name="orientation">vertical</property>
-                <property name="spacing">24</property>
-                <property name="margin-top">24</property>
-                <property name="margin-bottom">24</property>
-                <property name="margin-start">24</property>
-                <property name="margin-end">24</property>
-                <child><object class="GtkBox">
-                  <property name="orientation">vertical</property>
-                  <property name="spacing">6</property>
-                  <child><object class="GtkLabel" id="heading">
-                    <property name="wrap">True</property>
-                    <property name="xalign">0</property>
-                    <style><class name="title-2"/></style>
-                  </object></child>
-                  <child><object class="GtkLabel" id="identity">
-                    <property name="wrap">True</property>
-                    <property name="xalign">0</property>
-                    <style><class name="dim-label"/><class name="caption"/></style>
-                  </object></child>
-                  <child><object class="GtkLabel" id="app_id">
-                    <property name="wrap">True</property>
-                    <property name="xalign">0</property>
-                    <style><class name="dim-label"/><class name="caption"/></style>
-                  </object></child>
-                </object></child>
-                <child><object class="GtkLabel" id="purpose_detail">
-                  <property name="wrap">True</property>
-                  <property name="xalign">0</property>
-                </object></child>
-                <child><object class="AdwPreferencesGroup">
-                  <property name="can-focus">False</property>
-                  <child><object class="AdwActionRow" id="purpose">
-                    <property name="focusable">False</property>
-                    <property name="activatable">False</property>
-                    <property name="selectable">False</property>
-                    <property name="title" translatable="yes">Purpose</property>
-                    <property name="use-markup">False</property>
-                    <property name="subtitle-lines">0</property>
-                  </object></child>
-                  <child><object class="AdwActionRow" id="scope">
-                    <property name="focusable">False</property>
-                    <property name="activatable">False</property>
-                    <property name="selectable">False</property>
-                    <property name="title" translatable="yes">Operations</property>
-                    <property name="use-markup">False</property>
-                    <property name="subtitle-lines">0</property>
-                  </object></child>
-                  <child><object class="AdwActionRow" id="duration">
-                    <property name="focusable">False</property>
-                    <property name="activatable">False</property>
-                    <property name="selectable">False</property>
-                    <property name="title" translatable="yes">Duration</property>
-                    <property name="use-markup">False</property>
-                    <property name="subtitle-lines">0</property>
-                  </object></child>
-                </object></child>
-                <child><object class="GtkLabel" id="pin_note">
-                  <property name="label" translatable="yes">After you choose, you will be asked for your security token PIN.</property>
-                  <property name="wrap">True</property>
-                  <property name="xalign">0</property>
-                </object></child>
-                <child><object class="AdwPreferencesGroup" id="reason_group">
-                  <property name="can-focus">False</property>
-                  <property name="title" translatable="yes">Reason given by the application</property>
-                  <property name="description" translatable="yes">This reason is untrusted and has not been verified by the system.</property>
-                  <child><object class="GtkLabel" id="reason">
-                    <property name="wrap">True</property>
-                    <property name="xalign">0</property>
-                  </object></child>
-                </object></child>
-                <child><object class="AdwStatusPage" id="empty">
-                  <property name="title" translatable="yes">Insert your security token</property>
-                  <property name="icon-name">dialog-password-symbolic</property>
-                </object></child>
-                <child><object class="AdwPreferencesGroup" id="candidate_group">
-                  <child><object class="GtkListBox" id="candidates">
-                  <property name="selection-mode">single</property>
-                  <property name="activate-on-single-click">False</property>
-                  <style><class name="boxed-list"/></style>
-                  <signal name="row-selected" handler="row_selected" swapped="yes"/>
-                  <signal name="row-activated" handler="row_activated" swapped="yes"/>
-                  </object></child>
-                </object></child>
-              </object>
-            </property>
-          </object>
-        </property>
-      </object>
-    </property>
+        <child type="end"><object class="GtkButton" id="accept">
+          <property name="label" translatable="yes">_Allow</property>
+          <property name="use-underline">True</property>
+          <property name="sensitive">False</property>
+          <style><class name="suggested-action"/></style>
+          <signal name="clicked" handler="accept_clicked" swapped="yes"/>
+        </object></child>
+      </object></child>
+      <property name="content"><object class="GtkBox">
+        <property name="orientation">vertical</property>
+        <property name="spacing">18</property>
+        <property name="margin-top">18</property>
+        <property name="margin-bottom">30</property>
+        <property name="margin-start">30</property>
+        <property name="margin-end">30</property>
+        <child><object class="GtkImage" id="icon">
+          <property name="icon-name">auth-smartcard-symbolic</property>
+          <property name="pixel-size">64</property>
+          <style><class name="dim-label"/></style>
+        </object></child>
+        <child><object class="GtkBox">
+          <property name="orientation">vertical</property>
+          <property name="spacing">9</property>
+          <child><object class="GtkLabel" id="heading">
+            <property name="wrap">True</property>
+            <property name="justify">center</property>
+            <style><class name="title-2"/></style>
+          </object></child>
+          <child><object class="GtkLabel" id="body">
+            <property name="wrap">True</property>
+            <property name="justify">center</property>
+          </object></child>
+          <child><object class="GtkLabel" id="identity">
+            <property name="wrap">True</property>
+            <property name="justify">center</property>
+            <style><class name="dim-label"/><class name="caption"/></style>
+          </object></child>
+          <child><object class="GtkLabel" id="reason">
+            <property name="wrap">True</property>
+            <property name="lines">3</property>
+            <property name="ellipsize">end</property>
+            <property name="justify">center</property>
+            <style><class name="dim-label"/></style>
+          </object></child>
+        </object></child>
+        <child><object class="GtkScrolledWindow">
+          <property name="vexpand">False</property>
+          <property name="valign">start</property>
+          <property name="hscrollbar-policy">never</property>
+          <property name="propagate-natural-height">True</property>
+          <property name="max-content-height">360</property>
+          <property name="child"><object class="GtkViewport" id="candidate_viewport">
+            <property name="vscroll-policy">natural</property>
+            <property name="child"><object class="GtkListBox" id="candidates">
+              <property name="selection-mode">single</property>
+              <property name="activate-on-single-click">False</property>
+              <style><class name="boxed-list"/></style>
+              <signal name="row-selected" handler="row_selected" swapped="yes"/>
+              <signal name="row-activated" handler="row_activated" swapped="yes"/>
+            </object></property>
+          </object></property>
+        </object></child>
+      </object></property>
+    </object></property>
   </template>
 </interface>

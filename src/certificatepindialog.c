@@ -25,17 +25,20 @@ struct _CertificatePinDialog
   gboolean ready;
   gboolean system;
   gboolean final_try;
+  gboolean count_low;
+  gboolean incorrect;
   gboolean round_pending;
   gboolean passive_confirm;
   gboolean prompter_closed;
   guint dismiss_idle;
   gulong close_id;
   GcrPrompt *prompt;
-  char *system_message;
+  char *status;
+  GtkLabel *heading;
+  GtkLabel *token;
   GtkLabel *description;
   GtkLabel *hint;
-  GtkLabel *status;
-  GtkWidget *protected_note;
+  GtkLabel *reader_notice;
   GtkPasswordEntry *entry;
   GtkButton *submit;
   GtkButton *cancel;
@@ -52,20 +55,46 @@ static void system_ask (CertificatePinDialog *self);
 static void system_confirmed (GObject *source, GAsyncResult *result, gpointer data);
 static void cancel_clicked (CertificatePinDialog *self);
 
+static void
+set_status (CertificatePinDialog *self,
+            const char           *status)
+{
+  g_free (self->status);
+  self->status = g_strdup (status);
+  self->incorrect = FALSE;
+}
+
+/* Use the same single message for GTK, Gcr and accessibility. A local/status
+ * error replaces a token hint; an incorrect PIN combines with its hint. */
+static const char *
+pin_message (CertificatePinDialog *self)
+{
+  if (self->locked)
+    return _("The PIN is locked. Unlock it with your PUK or ask your administrator.");
+  if (self->incorrect)
+    return self->final_try ? _("Wrong PIN. Another wrong PIN locks the token.") :
+      self->count_low ? _("Wrong PIN. Few attempts may remain.") : _("Wrong PIN. Try again.");
+  if (self->status != NULL && *self->status)
+    return self->status;
+  if (self->final_try)
+    return _("Last attempt. Another wrong PIN locks the token.");
+  if (self->count_low)
+    return _("A wrong PIN was entered before. Few attempts may remain.");
+  return "";
+}
+
 /* GTK_A11Y=none has a stub context without an announce vfunc. */
 static void
 announce_status (CertificatePinDialog *self)
 {
   g_autoptr(GtkATContext) context = NULL;
-  g_autofree char *text = NULL;
 
   if (!gtk_widget_get_mapped (GTK_WIDGET (self)))
     return;
   context = gtk_accessible_get_at_context (GTK_ACCESSIBLE (self));
   if (context == NULL || g_strcmp0 (G_OBJECT_TYPE_NAME (context), "GtkAtSpiContext") != 0)
     return;
-  text = g_strdup_printf ("%s %s", gtk_label_get_text (self->hint), gtk_label_get_text (self->status));
-  gtk_accessible_announce (GTK_ACCESSIBLE (self), text, GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_HIGH);
+  gtk_accessible_announce (GTK_ACCESSIBLE (self), pin_message (self), GTK_ACCESSIBLE_ANNOUNCEMENT_PRIORITY_HIGH);
 }
 
 static void
@@ -78,6 +107,13 @@ update_controls (CertificatePinDialog *self)
   gtk_widget_set_visible (GTK_WIDGET (self->submit), !self->protected_path || self->warning_id != 0);
   gtk_widget_set_visible (GTK_WIDGET (self->spinner), self->busy || self->submitted);
   gtk_spinner_set_spinning (self->spinner, self->busy || self->submitted);
+  gtk_label_set_text (self->hint, pin_message (self));
+  gtk_widget_remove_css_class (GTK_WIDGET (self->hint), "warning");
+  gtk_widget_remove_css_class (GTK_WIDGET (self->hint), "error");
+  gtk_widget_add_css_class (GTK_WIDGET (self->hint),
+    self->locked || self->final_try || self->incorrect || (self->status != NULL && *self->status) ? "error" : "warning");
+  gtk_widget_set_visible (GTK_WIDGET (self->hint), *gtk_label_get_text (self->hint));
+  gtk_widget_set_visible (GTK_WIDGET (self->reader_notice), self->protected_path && self->warning_id != 0);
 }
 
 static void
@@ -98,6 +134,7 @@ submit_clicked (CertificatePinDialog *self)
         return;
       self->warning_id = 0;
       self->submitted = TRUE;
+      set_status (self, NULL);
       update_controls (self);
       /* Only this explicit Continue action spends the final protected attempt. */
       xcc_warning_reply (self->context, self->id, warning_id, TRUE);
@@ -119,13 +156,16 @@ submit_clicked (CertificatePinDialog *self)
   if (secret == NULL || !xcc_secret_set_length (secret, length))
     {
       xcc_secret_free (secret);
-      gtk_label_set_text (self->status, length == 0 ? _("Enter the PIN for this token.") :
-                          length > 511 ? _("PIN exceeds the supported length.") :
-                          _("The PIN could not be held in secure memory."));
+      set_status (self, length == 0 ? _("Enter your PIN.") :
+                  length > 511 ? _("This PIN is too long.") :
+                  _("The PIN could not be kept in secure memory."));
+      update_controls (self);
+      announce_status (self);
       return;
     }
 
   self->submitted = TRUE;
+  set_status (self, NULL);
   update_controls (self);
   xcc_pin_submit (self->context, self->id, secret); /* consumes */
 }
@@ -169,36 +209,46 @@ translated_status (const XccPinView *view)
   switch (view->status_code)
     {
     case XCC_PIN_STATUS_INCORRECT:
-      return _("That PIN was not accepted. Try again.");
+      return _("Wrong PIN. Try again.");
     case XCC_PIN_STATUS_REQUIRED:
-      return _("Enter the PIN for this token.");
+      return _("Enter your PIN.");
     case XCC_PIN_STATUS_TOO_LONG:
-      return _("PIN exceeds the supported length.");
+      return _("This PIN is too long.");
     case XCC_PIN_STATUS_MEMORY_UNAVAILABLE:
-      return _("The PIN could not be held in secure memory.");
+      return _("The PIN could not be kept in secure memory.");
     default:
-      return _("The PIN could not be submitted. Try again.");
+      return _("The PIN could not be sent to the token. Try again.");
     }
 }
 
-static const char *
-translated_purpose (const XccPinView *view)
+static char *
+translated_body (const XccPinView *view,
+                 const char       *caller)
 {
-  if (view->struct_size < offsetof (XccPinView, generic_purpose) + sizeof (view->generic_purpose))
-    return view->purpose_display ? view->purpose_display : _("Use a certificate");
-  if (!view->generic_purpose)
+  const char *format = _("%s needs it to use your certificate.");
+  g_autofree char *body = NULL;
+
+  if (view->struct_size >= offsetof (XccPinView, generic_purpose) + sizeof (view->generic_purpose) &&
+      !view->generic_purpose)
     switch (view->purpose)
       {
       case XCC_PURPOSE_CLIENT_AUTH:
-        return _("Authenticate to a server");
+        format = _("%s needs it to identify you to a website.");
+        break;
       case XCC_PURPOSE_SIGNING:
-        return _("Sign a document or data");
+        format = _("%s needs it to sign documents and data.");
+        break;
       case XCC_PURPOSE_EMAIL:
-        return _("Use secure email");
+        format = _("%s needs it to use your email certificate.");
+        break;
       case XCC_PURPOSE_SSH:
-        return _("Authenticate an SSH connection");
+        format = _("%s needs it to sign in to an SSH server.");
+        break;
       }
-  return _("Use a certificate");
+  body = g_strdup_printf (format, caller);
+  return view->context_specific ?
+    g_strconcat (body, " ", _("Your security token asks for the PIN before each signature."), NULL) :
+    g_steal_pointer (&body);
 }
 
 void
@@ -207,7 +257,12 @@ certificate_pin_dialog_update (CertificatePinDialog *self,
 {
   g_autofree char *description = NULL;
   gboolean fresh_input;
+  gboolean token_fallback;
+  gboolean caller_fallback;
   const char *token;
+  const char *caller;
+  const char *heading;
+  g_autofree char *token_line = NULL;
 
   if (self->hidden)
     return;
@@ -220,37 +275,36 @@ certificate_pin_dialog_update (CertificatePinDialog *self,
     }
   self->protected_path = view->protected_path;
   self->final_try = view->final_try;
+  self->count_low = view->count_low;
   self->busy = view->busy;
   self->locked = view->locked;
   fresh_input = view->struct_size >= offsetof (XccPinView, status_code) + sizeof (view->status_code) ?
     view->status_code != XCC_PIN_STATUS_NONE : view->status != NULL;
-  token = view->struct_size >= offsetof (XccPinView, display_flags) + sizeof (view->display_flags) &&
-    (view->display_flags & XCC_DISPLAY_TOKEN_FALLBACK) ? _("Unnamed token") : view->token_label;
-  description = g_strdup_printf (_("%s\n%s\nToken: %s\nReader: %s\n%s"),
-                                 view->caller_display ? view->caller_display : _("An unidentified application"),
-                                 translated_purpose (view),
-                                 token ? token : _("Unnamed token"), view->reader ? view->reader : "",
-                                 view->context_specific ? _("Authorize this operation") :
-                                                          _("Unlock the security token"));
+  token_fallback = view->struct_size >= offsetof (XccPinView, display_flags) + sizeof (view->display_flags) &&
+    (view->display_flags & XCC_DISPLAY_TOKEN_FALLBACK);
+  caller_fallback = view->struct_size >= offsetof (XccPinView, display_flags) + sizeof (view->display_flags) &&
+    (view->display_flags & XCC_DISPLAY_CALLER_FALLBACK);
+  token = token_fallback || !view->token_label || !*view->token_label ? _("Unnamed token") : view->token_label;
+  caller = caller_fallback || !view->caller_display || !*view->caller_display ? _("An unknown app") : view->caller_display;
+  heading = view->protected_path ?
+    (view->context_specific ? _("Enter your PIN again on the reader") : _("Enter your PIN on the reader")) :
+    (view->context_specific ? _("Enter your PIN again") : _("Enter your PIN"));
+  description = translated_body (view, caller);
+  token_line = token_fallback && view->reader && *view->reader ?
+    g_strdup_printf (_("Security token “%s” in %s"), token, view->reader) :
+    g_strdup_printf (_("Security token “%s”"), token);
+  gtk_label_set_text (self->heading, heading);
   gtk_label_set_text (self->description, description);
-  if (self->system)
-    {
-      g_free (self->system_message);
-      self->system_message = g_strdup_printf (_("%s wants to use the security token “%s”"),
-        view->caller_display ? view->caller_display : _("An unidentified application"),
-        token ? token : _("Unnamed token"));
-    }
-  gtk_label_set_text (self->hint, view->locked ? _("The PIN is locked.") :
-                      view->final_try ? _("This is the final PIN attempt. Another incorrect PIN will lock the token.") :
-                      view->count_low ? _("The PIN has been entered incorrectly. Only a few attempts may remain.") : "");
+  gtk_label_set_text (self->token, token_line);
   gtk_widget_set_visible (GTK_WIDGET (self->entry), !view->protected_path);
-  gtk_widget_set_visible (self->protected_note, view->protected_path);
   gtk_button_set_label (self->submit, view->protected_path ? _("_Continue") : _("_Unlock"));
   if (fresh_input)
     {
       self->submitted = FALSE;
       gtk_editable_set_text (GTK_EDITABLE (self->entry), "");
-      gtk_label_set_text (self->status, translated_status (view));
+      set_status (self, translated_status (view));
+      self->incorrect = view->struct_size >= offsetof (XccPinView, status_code) + sizeof (view->status_code) &&
+        view->status_code == XCC_PIN_STATUS_INCORRECT;
     }
   if (view->busy)
     gtk_editable_set_text (GTK_EDITABLE (self->entry), "");
@@ -282,8 +336,7 @@ certificate_pin_dialog_warning (CertificatePinDialog *self,
       return;
     }
   self->warning_id = warning->warning_id;
-  gtk_label_set_text (self->hint, _("This is the final PIN attempt. Another incorrect PIN will lock the token."));
-  gtk_label_set_text (self->status, _("Continue to enter the PIN on the reader, or Cancel."));
+  self->final_try = TRUE;
   if (self->system)
     {
       if (self->prompt == NULL || self->prompter_closed || self->round_pending)
@@ -297,7 +350,6 @@ certificate_pin_dialog_warning (CertificatePinDialog *self,
       gcr_prompt_confirm_async (self->prompt, NULL, system_confirmed, g_object_ref (self));
       return;
     }
-  gtk_widget_add_css_class (GTK_WIDGET (self->submit), "destructive-action");
   update_controls (self);
   gtk_widget_grab_focus (GTK_WIDGET (self->cancel));
   announce_status (self);
@@ -369,6 +421,7 @@ system_confirmed (GObject      *source,
         {
           self->warning_id = 0;
           self->submitted = TRUE;
+          set_status (self, NULL);
           xcc_warning_reply (self->context, self->id, warning_id, TRUE);
         }
       /* A passive PIN-pad notice must never submit another login. */
@@ -416,13 +469,14 @@ system_password (GObject      *source,
   if (secret == NULL || !xcc_secret_set_length (secret, length))
     {
       xcc_secret_free (secret);
-      gtk_label_set_text (self->status, length == 0 ? _("Enter the PIN for this token.") :
-                          length > 511 ? _("PIN exceeds the supported length.") :
-                          _("The PIN could not be held in secure memory."));
+      set_status (self, length == 0 ? _("Enter your PIN.") :
+                  length > 511 ? _("This PIN is too long.") :
+                  _("The PIN could not be kept in secure memory."));
       system_refresh (self);
       goto out;
     }
   self->submitted = TRUE;
+  set_status (self, NULL);
   xcc_pin_submit (self->context, self->id, secret); /* consumes */
 out:
   g_object_unref (self);
@@ -441,21 +495,17 @@ system_ask (CertificatePinDialog *self)
 static void
 system_refresh (CertificatePinDialog *self)
 {
-  g_autofree char *warning = NULL;
   g_autofree char *description = NULL;
 
   if (self->prompt == NULL || self->prompter_closed || self->hidden)
     return;
-  description = g_strdup_printf ("%s%s%s", gtk_label_get_text (self->description),
-    self->protected_path ? "\n\n" : "",
-    self->protected_path ? _("Enter your PIN on the security token or reader.") : "");
-  warning = g_strdup_printf ("%s%s%s", gtk_label_get_text (self->hint),
-    *gtk_label_get_text (self->hint) && *gtk_label_get_text (self->status) ? " " : "",
-    gtk_label_get_text (self->status));
-  gcr_prompt_set_title (self->prompt, _("Security Token PIN"));
-  gcr_prompt_set_message (self->prompt, self->system_message);
+  description = g_strdup_printf ("%s\n\n%s%s%s", gtk_label_get_text (self->description), gtk_label_get_text (self->token),
+    self->protected_path && self->warning_id != 0 ? "\n\n" : "",
+    self->protected_path && self->warning_id != 0 ? gtk_label_get_text (self->reader_notice) : "");
+  gcr_prompt_set_title (self->prompt, _("Unlock Security Token"));
+  gcr_prompt_set_message (self->prompt, gtk_label_get_text (self->heading));
   gcr_prompt_set_description (self->prompt, description);
-  gcr_prompt_set_warning (self->prompt, warning);
+  gcr_prompt_set_warning (self->prompt, pin_message (self));
   gcr_prompt_set_continue_label (self->prompt, self->protected_path ? _("_Continue") : _("_Unlock"));
   gcr_prompt_set_cancel_label (self->prompt, _("_Cancel"));
   /* No persistence choice and no caller-window: Shell's prompt is session-modal. */
@@ -578,7 +628,7 @@ certificate_pin_dialog_finalize (GObject *object)
 {
   CertificatePinDialog *self = CERTIFICATE_PIN_DIALOG (object);
 
-  g_free (self->system_message);
+  g_free (self->status);
   if (self->system)
     xcc_context_unref (self->context);
   G_OBJECT_CLASS (certificate_pin_dialog_parent_class)->finalize (object);
@@ -593,10 +643,11 @@ certificate_pin_dialog_class_init (CertificatePinDialogClass *klass)
   GTK_WINDOW_CLASS (klass)->close_request = close_request;
   gtk_widget_class_set_template_from_resource (widget_class,
     "/org/freedesktop/portal/desktop/gnome/certificatepindialog.ui");
+  gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, heading);
+  gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, token);
   gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, description);
   gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, hint);
-  gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, status);
-  gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, protected_note);
+  gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, reader_notice);
   gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, entry);
   gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, submit);
   gtk_widget_class_bind_template_child (widget_class, CertificatePinDialog, cancel);

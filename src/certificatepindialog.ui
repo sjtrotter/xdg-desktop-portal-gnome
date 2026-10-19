@@ -1,72 +1,85 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <interface domain="xdg-desktop-portal-gnome">
   <template class="CertificatePinDialog" parent="AdwWindow">
-    <property name="title" translatable="yes">Security Token PIN</property>
+    <property name="title" translatable="yes">Unlock Security Token</property>
     <property name="default-width">440</property>
+    <property name="resizable">False</property>
     <property name="modal">True</property>
-    <child>
-      <object class="GtkShortcutController">
-        <child><object class="GtkShortcut">
-          <property name="trigger">Escape</property>
-          <property name="action">action(window.close)</property>
+    <child><object class="GtkShortcutController">
+      <child><object class="GtkShortcut">
+        <property name="trigger">Escape</property>
+        <property name="action">action(window.close)</property>
+      </object></child>
+    </object></child>
+    <!-- A message area and a response area, without a window header bar.
+         Keep the window alive during submission, retries and PIN-pad login. -->
+    <property name="content"><object class="GtkBox">
+      <property name="orientation">vertical</property>
+      <child><object class="GtkBox">
+        <property name="orientation">vertical</property>
+        <property name="spacing">12</property>
+        <property name="margin-top">30</property>
+        <property name="margin-bottom">24</property>
+        <property name="margin-start">24</property>
+        <property name="margin-end">24</property>
+        <child><object class="GtkLabel" id="heading">
+          <property name="wrap">True</property>
+          <property name="justify">center</property>
+          <style><class name="title-2"/></style>
         </object></child>
-      </object>
-    </child>
-    <property name="content">
-      <object class="AdwToolbarView">
-        <child type="top"><object class="AdwHeaderBar">
-          <property name="show-start-title-buttons">False</property>
-          <property name="show-end-title-buttons">False</property>
+        <child><object class="GtkLabel" id="description">
+          <property name="wrap">True</property>
+          <property name="justify">center</property>
         </object></child>
-        <property name="content">
-          <object class="GtkBox">
-            <property name="orientation">vertical</property>
-            <property name="spacing">18</property>
-            <property name="margin-top">24</property>
-            <property name="margin-bottom">24</property>
-            <property name="margin-start">24</property>
-            <property name="margin-end">24</property>
-            <child><object class="GtkLabel" id="description">
-              <property name="wrap">True</property><property name="xalign">0</property>
-            </object></child>
-            <!-- Retry warnings precede input in visual and accessibility order. -->
-            <child><object class="GtkLabel" id="hint">
-              <property name="wrap">True</property><property name="xalign">0</property>
-              <style><class name="warning"/></style>
-            </object></child>
-            <child><object class="GtkLabel" id="status">
-              <property name="wrap">True</property><property name="xalign">0</property>
-            </object></child>
-            <child><object class="GtkLabel" id="protected_note">
-              <property name="wrap">True</property><property name="xalign">0</property>
-              <property name="label" translatable="yes">Enter your PIN on the security token or reader.</property>
-            </object></child>
-            <child><object class="GtkPasswordEntry" id="entry">
-              <property name="show-peek-icon">False</property>
-              <property name="activates-default">True</property>
-              <property name="placeholder-text" translatable="yes">PIN</property>
-              <property name="enable-undo">False</property>
-            </object></child>
-            <child><object class="GtkSpinner" id="spinner"/>
-            </child>
-            <child><object class="GtkBox">
-              <property name="spacing">12</property>
-              <property name="halign">end</property>
-              <child><object class="GtkButton" id="cancel">
-                <property name="label" translatable="yes">_Cancel</property>
-                <property name="use-underline">True</property>
-                <signal name="clicked" handler="cancel_clicked" swapped="yes"/>
-              </object></child>
-              <child><object class="GtkButton" id="submit">
-                <property name="label" translatable="yes">_Unlock</property>
-                <property name="use-underline">True</property>
-                <style><class name="suggested-action"/></style>
-                <signal name="clicked" handler="submit_clicked" swapped="yes"/>
-              </object></child>
-            </object></child>
-          </object>
-        </property>
-      </object>
-    </property>
+        <child><object class="GtkLabel" id="token">
+          <property name="wrap">True</property>
+          <property name="justify">center</property>
+          <style><class name="dim-label"/></style>
+        </object></child>
+        <!-- Warnings precede input in visual and accessibility order. -->
+        <child><object class="GtkLabel" id="hint">
+          <property name="wrap">True</property>
+          <property name="justify">center</property>
+          <style><class name="warning"/></style>
+        </object></child>
+        <child><object class="GtkLabel" id="reader_notice">
+          <property name="label" translatable="yes">Enter the PIN on the reader after you continue.</property>
+          <property name="visible">False</property>
+          <property name="wrap">True</property>
+          <property name="justify">center</property>
+        </object></child>
+        <child><object class="GtkBox">
+          <property name="spacing">12</property>
+          <child><object class="GtkPasswordEntry" id="entry">
+            <property name="hexpand">True</property>
+            <property name="show-peek-icon">False</property>
+            <property name="activates-default">True</property>
+            <property name="placeholder-text" translatable="yes">PIN</property>
+            <property name="enable-undo">False</property>
+          </object></child>
+          <child><object class="GtkSpinner" id="spinner">
+            <property name="halign">center</property>
+          </object></child>
+        </object></child>
+      </object></child>
+      <child><object class="GtkBox">
+        <property name="spacing">12</property>
+        <property name="homogeneous">True</property>
+        <property name="margin-start">24</property>
+        <property name="margin-end">24</property>
+        <property name="margin-bottom">24</property>
+        <child><object class="GtkButton" id="cancel">
+          <property name="label" translatable="yes">_Cancel</property>
+          <property name="use-underline">True</property>
+          <signal name="clicked" handler="cancel_clicked" swapped="yes"/>
+        </object></child>
+        <child><object class="GtkButton" id="submit">
+          <property name="label" translatable="yes">_Unlock</property>
+          <property name="use-underline">True</property>
+          <style><class name="suggested-action"/></style>
+          <signal name="clicked" handler="submit_clicked" swapped="yes"/>
+        </object></child>
+      </object></child>
+    </object></property>
   </template>
 </interface>
