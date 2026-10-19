@@ -34,6 +34,9 @@ endif
 
 certificate_dep = dependency('xdp-certificate-core-0', required: get_option('certificate'))
 certificate_enabled = certificate_dep.found()
+if certificate_enabled
+  certificate_gcr_dep = dependency('gcr-4')
+endif
 
 subdir('data')
 subdir('po')

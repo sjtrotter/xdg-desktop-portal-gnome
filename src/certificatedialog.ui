@@ -39,28 +39,87 @@
             <property name="child">
               <object class="GtkBox">
                 <property name="orientation">vertical</property>
-                <property name="spacing">18</property>
+                <property name="spacing">24</property>
                 <property name="margin-top">24</property>
                 <property name="margin-bottom">24</property>
                 <property name="margin-start">24</property>
                 <property name="margin-end">24</property>
-                <child><object class="GtkLabel" id="disclosure">
+                <child><object class="GtkBox">
+                  <property name="orientation">vertical</property>
+                  <property name="spacing">6</property>
+                  <child><object class="GtkLabel" id="heading">
+                    <property name="wrap">True</property>
+                    <property name="xalign">0</property>
+                    <style><class name="title-2"/></style>
+                  </object></child>
+                  <child><object class="GtkLabel" id="identity">
+                    <property name="wrap">True</property>
+                    <property name="xalign">0</property>
+                    <style><class name="dim-label"/><class name="caption"/></style>
+                  </object></child>
+                  <child><object class="GtkLabel" id="app_id">
+                    <property name="wrap">True</property>
+                    <property name="xalign">0</property>
+                    <style><class name="dim-label"/><class name="caption"/></style>
+                  </object></child>
+                </object></child>
+                <child><object class="GtkLabel" id="purpose_detail">
                   <property name="wrap">True</property>
                   <property name="xalign">0</property>
                 </object></child>
-                <child><object class="GtkLabel" id="reason">
+                <child><object class="AdwPreferencesGroup">
+                  <property name="can-focus">False</property>
+                  <child><object class="AdwActionRow" id="purpose">
+                    <property name="focusable">False</property>
+                    <property name="activatable">False</property>
+                    <property name="selectable">False</property>
+                    <property name="title" translatable="yes">Purpose</property>
+                    <property name="use-markup">False</property>
+                    <property name="subtitle-lines">0</property>
+                  </object></child>
+                  <child><object class="AdwActionRow" id="scope">
+                    <property name="focusable">False</property>
+                    <property name="activatable">False</property>
+                    <property name="selectable">False</property>
+                    <property name="title" translatable="yes">Operations</property>
+                    <property name="use-markup">False</property>
+                    <property name="subtitle-lines">0</property>
+                  </object></child>
+                  <child><object class="AdwActionRow" id="duration">
+                    <property name="focusable">False</property>
+                    <property name="activatable">False</property>
+                    <property name="selectable">False</property>
+                    <property name="title" translatable="yes">Duration</property>
+                    <property name="use-markup">False</property>
+                    <property name="subtitle-lines">0</property>
+                  </object></child>
+                </object></child>
+                <child><object class="GtkLabel" id="pin_note">
+                  <property name="label" translatable="yes">After you choose, you will be asked for your security token PIN.</property>
                   <property name="wrap">True</property>
                   <property name="xalign">0</property>
+                </object></child>
+                <child><object class="AdwPreferencesGroup" id="reason_group">
+                  <property name="can-focus">False</property>
+                  <property name="title" translatable="yes">Reason given by the application</property>
+                  <property name="description" translatable="yes">This reason is untrusted and has not been verified by the system.</property>
+                  <child><object class="GtkLabel" id="reason">
+                    <property name="wrap">True</property>
+                    <property name="xalign">0</property>
+                  </object></child>
                 </object></child>
                 <child><object class="AdwStatusPage" id="empty">
                   <property name="title" translatable="yes">Insert your security token</property>
                   <property name="icon-name">dialog-password-symbolic</property>
                 </object></child>
-                <child><object class="GtkListBox" id="candidates">
+                <child><object class="AdwPreferencesGroup" id="candidate_group">
+                  <child><object class="GtkListBox" id="candidates">
                   <property name="selection-mode">single</property>
+                  <property name="activate-on-single-click">False</property>
                   <style><class name="boxed-list"/></style>
                   <signal name="row-selected" handler="row_selected" swapped="yes"/>
                   <signal name="row-activated" handler="row_activated" swapped="yes"/>
+                  </object></child>
                 </object></child>
               </object>
             </property>

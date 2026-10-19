@@ -18,6 +18,7 @@ restart the backend to apply changes. GNOME reviewers may prefer GSettings.
 [Certificate]
 Modules=/usr/lib64/pkcs11/libsofthsm2.so;
 AllowSoftwareTokens=true
+PinPrompt=auto
 ```
 
 `Modules` is a GLib keyfile string list (semicolon-separated, keyfile escaping).
@@ -28,11 +29,33 @@ backend and have the same trust level as the standalone service's `--module`.
 As in that service, explicitly selected modules may expose software tokens even
 with `AllowSoftwareTokens=false`; the SDK's module policy is unchanged.
 
+`PinPrompt` accepts `auto` (the default), `system`, or `dialog`. Selection is
+made for each PIN request. `auto` uses Gcr's system prompter when
+`org.gnome.keyring.SystemPrompter` has an owner on the session bus; otherwise it
+uses this backend's GTK dialog. `system` requires an existing prompter owner.
+When unavailable, the backend reports `XCC_ERROR_NO_DISPLAY` to the SDK, but the
+SDK's PIN failure path discards that error and `Sign` returns `device_error`.
+`dialog` always uses the GTK dialog. A system prompt that fails to open or
+disappears settles the request; it never silently switches to the GTK dialog.
+Invalid values prevent Certificate initialization. This setting is not read
+from the environment.
+
+In a GNOME session the system prompter is GNOME Shell. Its prompt is
+session-modal and is not attached to the caller's window. PIN-pad readers show
+a notice instead of a password field; the final attempt requires Continue.
+The `gcr-4` build dependency is required only when Certificate support is enabled.
+
 PIN protection (open GNOME review question)
 ------------------------------------------
 
-The embedded GNOME backend uses scoped PIN protection. GtkPasswordEntry uses
-GTK's non-pageable secure buffer, has no peek icon or undo, and is cleared
+The embedded GNOME backend uses scoped PIN protection. With the system prompt,
+the PIN is typed into gnome-shell and transferred to the backend over Gcr's
+secret exchange. The returned password is copied straight from Gcr's secure
+storage into XccSecret, without intermediate strings, properties, logs or signal
+arguments in certificate code. Shell and Gcr input-handling copies are outside
+this backend's control.
+
+With `PinPrompt=dialog`, GtkPasswordEntry uses GTK's non-pageable secure buffer, has no peek icon or undo, and is cleared
 immediately after copying directly to XccSecret, on busy, hide and destruction.
 Retained PIN bytes live in the SDK's XccSecret: best-effort mlock, page-aligned
 storage, MADV_DONTDUMP where supported, and full-capacity wiping on release.
@@ -42,8 +65,8 @@ strings, properties, signal arguments or logs.
 Unlike the standalone xdg-desktop-portal-certificate service (non-dumpable, no
 cores), this backend preserves normal dumpability and core limits for all of
 its portals. Crash dumps, crash reports or same-user ptrace can contain transient
-PIN copies from GTK key events, input methods and the input stack despite secure
-entry/secret storage. Scoped protection does not prevent ptrace from reading
+PIN copies from GTK (dialog mode), Gcr, input methods and the input stack despite
+secure entry/secret storage. Scoped protection does not prevent ptrace from reading
 live PINs. Clearing widgets cannot prove erasure of input-handling copies.
 
 Open question for GNOME reviewers: accept this residual risk, apply process-wide

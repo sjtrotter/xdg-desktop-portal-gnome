@@ -22,6 +22,13 @@
 #define FRONTEND_NAME "org.freedesktop.portal.Desktop"
 #define XCC_INIT(type) { .struct_size = sizeof (type), .abi_version = XCC_ABI_VERSION }
 
+typedef enum
+{
+  PIN_PROMPT_AUTO,
+  PIN_PROMPT_SYSTEM,
+  PIN_PROMPT_DIALOG
+} PinPromptMode;
+
 typedef struct
 {
   int refs;
@@ -57,6 +64,7 @@ typedef struct
   guint watch;
   gboolean resolved;
   gboolean stopping;
+  PinPromptMode pin_prompt;
 } Certificate;
 
 static Certificate *certificate;
@@ -925,7 +933,17 @@ pin_show (void             *data,
           XccUiId           id,
           const XccPinView *view)
 {
-  add_window (id, GTK_WINDOW (certificate_pin_dialog_new (certificate->context, id, view)));
+  gboolean available = certificate->pin_prompt != PIN_PROMPT_DIALOG &&
+    certificate_pin_system_available (certificate->connection);
+
+  if (certificate->pin_prompt == PIN_PROMPT_SYSTEM && !available)
+    {
+      xcc_ui_failed (certificate->context, id, XCC_ERROR_NO_DISPLAY);
+      return;
+    }
+  add_window (id, GTK_WINDOW (available ?
+    certificate_pin_system_new (certificate->context, id, view) :
+    certificate_pin_dialog_new (certificate->context, id, view)));
 }
 
 static void
@@ -978,10 +996,11 @@ close_ui (void   *data,
 }
 
 static gboolean
-read_config_file (const char *path,
-                  char     ***modules,
-                  gboolean   *allow_software,
-                  GError    **error)
+read_config_file (const char    *path,
+                  char        ***modules,
+                  gboolean      *allow_software,
+                  PinPromptMode *pin_prompt,
+                  GError       **error)
 {
   g_autoptr(GKeyFile) file = g_key_file_new ();
   g_autoptr(GError) local_error = NULL;
@@ -1005,6 +1024,21 @@ read_config_file (const char *path,
       *modules = g_steal_pointer (&values);
       if (*modules != NULL && (*modules)[0] == NULL)
         g_clear_pointer (modules, g_strfreev);
+    }
+  if (g_key_file_has_key (file, "Certificate", "PinPrompt", NULL))
+    {
+      g_autofree char *value = g_key_file_get_string (file, "Certificate", "PinPrompt", &local_error);
+
+      if (local_error != NULL)
+        goto invalid;
+      if (g_strcmp0 (value, "auto") == 0)
+        *pin_prompt = PIN_PROMPT_AUTO;
+      else if (g_strcmp0 (value, "system") == 0)
+        *pin_prompt = PIN_PROMPT_SYSTEM;
+      else if (g_strcmp0 (value, "dialog") == 0)
+        *pin_prompt = PIN_PROMPT_DIALOG;
+      else
+        goto invalid;
     }
   if (g_key_file_has_key (file, "Certificate", "AllowSoftwareTokens", NULL))
     {
@@ -1090,6 +1124,7 @@ certificate_init (GDBusConnection *connection,
   g_auto(GStrv) modules = NULL;
   g_autofree char *user_config = NULL;
   gboolean allow_software = FALSE;
+  PinPromptMode pin_prompt = PIN_PROMPT_AUTO;
 
   if (certificate != NULL)
     return TRUE;
@@ -1097,12 +1132,13 @@ certificate_init (GDBusConnection *connection,
    * at startup for now; GNOME reviewers may prefer GSettings before merging.
    * Module and software-token policy never come from environment variables. */
   user_config = g_build_filename (g_get_user_config_dir (), "xdg-desktop-portal-gnome", "certificate.conf", NULL);
-  if (!read_config_file ("/etc/xdg/xdg-desktop-portal-gnome/certificate.conf", &modules, &allow_software, error) ||
-      !read_config_file (user_config, &modules, &allow_software, error))
+  if (!read_config_file ("/etc/xdg/xdg-desktop-portal-gnome/certificate.conf", &modules, &allow_software, &pin_prompt, error) ||
+      !read_config_file (user_config, &modules, &allow_software, &pin_prompt, error))
     return FALSE;
 
   certificate = g_new0 (Certificate, 1);
   certificate->connection = g_object_ref (connection);
+  certificate->pin_prompt = pin_prompt;
   certificate->sessions = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, session_unref);
   certificate->windows = g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free, g_object_unref);
   certificate->transactions = g_ptr_array_new ();

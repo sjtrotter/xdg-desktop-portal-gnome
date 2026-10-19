@@ -1,6 +1,11 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: LGPL-2.1-or-later
+ * Gcr system-prompt lifetime handling adapted from pin-system.c in
+ * xdg-desktop-portal-certificate (2026 Stephen J. Trotter).
+ */
 #include "config.h"
 
+#define GCR_API_SUBJECT_TO_CHANGE 1
+#include <gcr/gcr.h>
 #include <string.h>
 #include <glib/gi18n.h>
 #include "certificate.h"
@@ -18,6 +23,15 @@ struct _CertificatePinDialog
   gboolean locked;
   gboolean hidden;
   gboolean ready;
+  gboolean system;
+  gboolean final_try;
+  gboolean round_pending;
+  gboolean passive_confirm;
+  gboolean prompter_closed;
+  guint dismiss_idle;
+  gulong close_id;
+  GcrPrompt *prompt;
+  char *system_message;
   GtkLabel *description;
   GtkLabel *hint;
   GtkLabel *status;
@@ -29,6 +43,14 @@ struct _CertificatePinDialog
 };
 
 G_DEFINE_TYPE (CertificatePinDialog, certificate_pin_dialog, ADW_TYPE_WINDOW)
+
+#define SYSTEM_PROMPTER_NAME "org.gnome.keyring.SystemPrompter"
+
+static void system_release (CertificatePinDialog *self);
+static void system_refresh (CertificatePinDialog *self);
+static void system_ask (CertificatePinDialog *self);
+static void system_confirmed (GObject *source, GAsyncResult *result, gpointer data);
+static void cancel_clicked (CertificatePinDialog *self);
 
 /* GTK_A11Y=none has a stub context without an announce vfunc. */
 static void
@@ -112,6 +134,8 @@ void
 certificate_pin_dialog_hide (CertificatePinDialog *self)
 {
   self->hidden = TRUE;
+  if (self->system)
+    system_release (self);
   gtk_editable_set_text (GTK_EDITABLE (self->entry), "");
   gtk_widget_set_visible (GTK_WIDGET (self), FALSE);
 }
@@ -195,6 +219,7 @@ certificate_pin_dialog_update (CertificatePinDialog *self,
       return;
     }
   self->protected_path = view->protected_path;
+  self->final_try = view->final_try;
   self->busy = view->busy;
   self->locked = view->locked;
   fresh_input = view->struct_size >= offsetof (XccPinView, status_code) + sizeof (view->status_code) ?
@@ -208,6 +233,13 @@ certificate_pin_dialog_update (CertificatePinDialog *self,
                                  view->context_specific ? _("Authorize this operation") :
                                                           _("Unlock the security token"));
   gtk_label_set_text (self->description, description);
+  if (self->system)
+    {
+      g_free (self->system_message);
+      self->system_message = g_strdup_printf (_("%s wants to use the security token “%s”"),
+        view->caller_display ? view->caller_display : _("An unidentified application"),
+        token ? token : _("Unnamed token"));
+    }
   gtk_label_set_text (self->hint, view->locked ? _("The PIN is locked.") :
                       view->final_try ? _("This is the final PIN attempt. Another incorrect PIN will lock the token.") :
                       view->count_low ? _("The PIN has been entered incorrectly. Only a few attempts may remain.") : "");
@@ -222,6 +254,11 @@ certificate_pin_dialog_update (CertificatePinDialog *self,
     }
   if (view->busy)
     gtk_editable_set_text (GTK_EDITABLE (self->entry), "");
+  if (self->system)
+    {
+      system_refresh (self);
+      return;
+    }
   update_controls (self);
   if (fresh_input)
     {
@@ -247,6 +284,19 @@ certificate_pin_dialog_warning (CertificatePinDialog *self,
   self->warning_id = warning->warning_id;
   gtk_label_set_text (self->hint, _("This is the final PIN attempt. Another incorrect PIN will lock the token."));
   gtk_label_set_text (self->status, _("Continue to enter the PIN on the reader, or Cancel."));
+  if (self->system)
+    {
+      if (self->prompt == NULL || self->prompter_closed || self->round_pending)
+        {
+          certificate_pin_dialog_hide (self);
+          xcc_ui_failed (self->context, self->id, XCC_ERROR_NO_DISPLAY);
+          return;
+        }
+      system_refresh (self);
+      self->round_pending = TRUE;
+      gcr_prompt_confirm_async (self->prompt, NULL, system_confirmed, g_object_ref (self));
+      return;
+    }
   gtk_widget_add_css_class (GTK_WIDGET (self->submit), "destructive-action");
   update_controls (self);
   gtk_widget_grab_focus (GTK_WIDGET (self->cancel));
@@ -268,11 +318,278 @@ mapped (CertificatePinDialog *self)
   announce_status (self);
 }
 
+/* Ported from the standalone pin-system provider. Gcr 4.4 can deliver a
+ * completion twice. Claim the result before touching the callback's reference,
+ * which may already have been released by the first completion. */
+static gboolean
+system_round_claim (GAsyncResult *result)
+{
+  if (g_object_get_data (G_OBJECT (result), "certificate-pin-round-settled"))
+    return FALSE;
+  g_object_set_data (G_OBJECT (result), "certificate-pin-round-settled", GINT_TO_POINTER (1));
+  return TRUE;
+}
+
+static void
+system_failed (CertificatePinDialog *self,
+               XccErrorCode          error)
+{
+  if (self->hidden)
+    return;
+  certificate_pin_dialog_hide (self);
+  /* Never log Gcr's error text: it is outside our PIN redaction boundary. */
+  xcc_ui_failed (self->context, self->id, error);
+}
+
+static void
+system_confirmed (GObject      *source,
+                  GAsyncResult *result,
+                  gpointer      data)
+{
+  CertificatePinDialog *self = data;
+  g_autoptr(GError) error = NULL;
+  GcrPromptReply reply;
+  gboolean passive;
+  guint64 warning_id;
+
+  if (!system_round_claim (result))
+    return;
+  reply = gcr_prompt_confirm_finish (GCR_PROMPT (source), result, &error);
+  self->round_pending = FALSE;
+  passive = self->passive_confirm;
+  self->passive_confirm = FALSE;
+  warning_id = self->warning_id;
+  if (!self->hidden)
+    {
+      if (error != NULL)
+        system_failed (self, XCC_ERROR_DEVICE);
+      else if (reply != GCR_PROMPT_REPLY_CONTINUE)
+        cancel_clicked (self);
+      else if (!passive && warning_id != 0)
+        {
+          self->warning_id = 0;
+          self->submitted = TRUE;
+          xcc_warning_reply (self->context, self->id, warning_id, TRUE);
+        }
+      /* A passive PIN-pad notice must never submit another login. */
+    }
+  g_object_unref (self);
+}
+
+static void
+system_password (GObject      *source,
+                 GAsyncResult *result,
+                 gpointer      data)
+{
+  CertificatePinDialog *self = data;
+  g_autoptr(GError) error = NULL;
+  const char *password;
+  XccSecret *secret;
+  size_t length, capacity;
+  uint8_t *bytes;
+
+  if (!system_round_claim (result))
+    return;
+  password = gcr_prompt_password_finish (GCR_PROMPT (source), result, &error);
+  self->round_pending = FALSE;
+  if (self->hidden)
+    goto out;
+  if (password == NULL)
+    {
+      if (error != NULL)
+        system_failed (self, XCC_ERROR_DEVICE);
+      else
+        cancel_clicked (self);
+      goto out;
+    }
+
+  /* Gcr owns secure password storage until the next prompt call. Copy directly
+   * into XccSecret, never an ordinary string, property, log or signal argument. */
+  length = strlen (password);
+  secret = xcc_secret_new ();
+  if (secret != NULL)
+    {
+      bytes = xcc_secret_data (secret, &capacity);
+      if (length < capacity && length <= 511)
+        memcpy (bytes, password, length);
+    }
+  if (secret == NULL || !xcc_secret_set_length (secret, length))
+    {
+      xcc_secret_free (secret);
+      gtk_label_set_text (self->status, length == 0 ? _("Enter the PIN for this token.") :
+                          length > 511 ? _("PIN exceeds the supported length.") :
+                          _("The PIN could not be held in secure memory."));
+      system_refresh (self);
+      goto out;
+    }
+  self->submitted = TRUE;
+  xcc_pin_submit (self->context, self->id, secret); /* consumes */
+out:
+  g_object_unref (self);
+}
+
+static void
+system_ask (CertificatePinDialog *self)
+{
+  if (self->hidden || !self->ready || self->prompt == NULL || self->prompter_closed ||
+      self->protected_path || self->busy || self->locked || self->submitted || self->round_pending)
+    return;
+  self->round_pending = TRUE;
+  gcr_prompt_password_async (self->prompt, NULL, system_password, g_object_ref (self));
+}
+
+static void
+system_refresh (CertificatePinDialog *self)
+{
+  g_autofree char *warning = NULL;
+  g_autofree char *description = NULL;
+
+  if (self->prompt == NULL || self->prompter_closed || self->hidden)
+    return;
+  description = g_strdup_printf ("%s%s%s", gtk_label_get_text (self->description),
+    self->protected_path ? "\n\n" : "",
+    self->protected_path ? _("Enter your PIN on the security token or reader.") : "");
+  warning = g_strdup_printf ("%s%s%s", gtk_label_get_text (self->hint),
+    *gtk_label_get_text (self->hint) && *gtk_label_get_text (self->status) ? " " : "",
+    gtk_label_get_text (self->status));
+  gcr_prompt_set_title (self->prompt, _("Security Token PIN"));
+  gcr_prompt_set_message (self->prompt, self->system_message);
+  gcr_prompt_set_description (self->prompt, description);
+  gcr_prompt_set_warning (self->prompt, warning);
+  gcr_prompt_set_continue_label (self->prompt, self->protected_path ? _("_Continue") : _("_Unlock"));
+  gcr_prompt_set_cancel_label (self->prompt, _("_Cancel"));
+  /* No persistence choice and no caller-window: Shell's prompt is session-modal. */
+  gcr_prompt_set_choice_label (self->prompt, NULL);
+  gcr_prompt_set_password_new (self->prompt, FALSE);
+  system_ask (self);
+}
+
+/* Run below Gcr's completion priority so its error/cancel outcome settles first. */
+static gboolean
+system_dismissed (gpointer data)
+{
+  CertificatePinDialog *self = data;
+
+  self->dismiss_idle = 0;
+  if (!self->hidden)
+    cancel_clicked (self);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+system_prompt_closed (GcrPrompt *prompt,
+                      gpointer   data)
+{
+  CertificatePinDialog *self = data;
+
+  if (self->hidden || self->prompter_closed)
+    return;
+  self->prompter_closed = TRUE;
+  self->dismiss_idle = g_idle_add_full (G_PRIORITY_DEFAULT_IDLE, system_dismissed,
+                                       g_object_ref (self), g_object_unref);
+}
+
+static void
+system_opened (GObject      *source,
+               GAsyncResult *result,
+               gpointer      data)
+{
+  CertificatePinDialog *self = data;
+  g_autoptr(GError) error = NULL;
+
+  if (!system_round_claim (result))
+    return;
+  self->prompt = gcr_system_prompt_open_finish (result, &error);
+  if (self->hidden)
+    system_release (self);
+  else if (self->prompt == NULL)
+    system_failed (self, XCC_ERROR_NO_DISPLAY);
+  else
+    {
+      self->close_id = g_signal_connect (self->prompt, "prompt-close", G_CALLBACK (system_prompt_closed), self);
+      system_refresh (self);
+      if (self->protected_path && !self->final_try && !self->locked)
+        {
+          self->passive_confirm = TRUE;
+          self->round_pending = TRUE;
+          gcr_prompt_confirm_async (self->prompt, NULL, system_confirmed, g_object_ref (self));
+        }
+      /* Only acknowledge once the prompt can receive FINAL_TRY warnings. */
+      self->ready = TRUE;
+      xcc_pin_ready (self->context, self->id);
+      system_ask (self);
+    }
+  g_object_unref (self);
+}
+
+static void
+system_closed (GObject      *source,
+               GAsyncResult *result,
+               gpointer      data)
+{
+  gcr_system_prompt_close_finish (GCR_SYSTEM_PROMPT (source), result, NULL);
+  g_object_unref (data);
+}
+
+static void
+system_release (CertificatePinDialog *self)
+{
+  if (self->dismiss_idle != 0)
+    {
+      g_source_remove (self->dismiss_idle);
+      self->dismiss_idle = 0;
+    }
+  if (self->prompt == NULL)
+    return;
+  if (self->close_id != 0)
+    {
+      g_signal_handler_disconnect (self->prompt, self->close_id);
+      self->close_id = 0;
+    }
+  if (!self->prompter_closed)
+    {
+      self->prompter_closed = TRUE;
+      /* Close rounds instead of cancelling them: Gcr 4.4 can complete twice. */
+      gcr_prompt_close (self->prompt);
+    }
+  /* Synchronous close leaks a nested GMainContext per prompt on Gcr 4.4. */
+  gcr_system_prompt_close_async (GCR_SYSTEM_PROMPT (self->prompt), NULL,
+                                 system_closed, g_object_ref (self));
+  g_clear_object (&self->prompt);
+}
+
+gboolean
+certificate_pin_system_available (GDBusConnection *connection)
+{
+  g_autoptr(GVariant) reply = NULL;
+  gboolean owned = FALSE;
+
+  /* Auto uses an existing owner only; do not activate a fallback prompter. */
+  reply = g_dbus_connection_call_sync (connection, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+    "org.freedesktop.DBus", "NameHasOwner", g_variant_new ("(s)", SYSTEM_PROMPTER_NAME),
+    G_VARIANT_TYPE ("(b)"), G_DBUS_CALL_FLAGS_NO_AUTO_START, 2000, NULL, NULL);
+  if (reply != NULL)
+    g_variant_get (reply, "(b)", &owned);
+  return owned;
+}
+
+static void
+certificate_pin_dialog_finalize (GObject *object)
+{
+  CertificatePinDialog *self = CERTIFICATE_PIN_DIALOG (object);
+
+  g_free (self->system_message);
+  if (self->system)
+    xcc_context_unref (self->context);
+  G_OBJECT_CLASS (certificate_pin_dialog_parent_class)->finalize (object);
+}
+
 static void
 certificate_pin_dialog_class_init (CertificatePinDialogClass *klass)
 {
   GtkWidgetClass *widget_class = GTK_WIDGET_CLASS (klass);
 
+  G_OBJECT_CLASS (klass)->finalize = certificate_pin_dialog_finalize;
   GTK_WINDOW_CLASS (klass)->close_request = close_request;
   gtk_widget_class_set_template_from_resource (widget_class,
     "/org/freedesktop/portal/desktop/gnome/certificatepindialog.ui");
@@ -308,5 +625,23 @@ certificate_pin_dialog_new (XccContext       *context,
   gtk_window_set_default_widget (GTK_WINDOW (self), GTK_WIDGET (self->submit));
   if (!self->hidden)
     certificate_window_present (GTK_WINDOW (self), view->parent_window, NULL);
+  return self;
+}
+
+CertificatePinDialog *
+certificate_pin_system_new (XccContext       *context,
+                           XccUiId           id,
+                           const XccPinView *view)
+{
+  CertificatePinDialog *self = g_object_new (CERTIFICATE_TYPE_PIN_DIALOG, NULL);
+
+  self->system = TRUE;
+  /* Async open/round/close callbacks can outlive the SDK's close notification. */
+  self->context = xcc_context_ref (context);
+  self->id = id;
+  certificate_pin_dialog_update (self, view);
+  if (!self->hidden)
+    gcr_system_prompt_open_for_prompter_async (SYSTEM_PROMPTER_NAME, 60, NULL,
+                                              system_opened, g_object_ref (self));
   return self;
 }

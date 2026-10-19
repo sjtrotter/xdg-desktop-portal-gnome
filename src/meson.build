@@ -140,7 +140,7 @@ sources = built_sources + files(
 )
 
 if certificate_enabled
-  deps += [certificate_dep]
+  deps += [certificate_dep, certificate_gcr_dep]
   sources += files('certificate.c', 'certificatedialog.c', 'certificatepindialog.c')
   sources += gnome.compile_resources(
     'certificate-resources',

@@ -16,7 +16,16 @@ struct _CertificateDialog
   char *announcement;
   gboolean announcement_pending;
   GHashTable *candidate_ids;
-  GtkLabel *disclosure;
+  GtkLabel *heading;
+  GtkLabel *identity;
+  GtkLabel *app_id;
+  GtkLabel *purpose_detail;
+  AdwActionRow *purpose;
+  AdwActionRow *scope;
+  AdwActionRow *duration;
+  GtkWidget *pin_note;
+  AdwPreferencesGroup *reason_group;
+  AdwPreferencesGroup *candidate_group;
   GtkLabel *reason;
   AdwStatusPage *empty;
   GtkListBox *candidates;
@@ -56,7 +65,118 @@ static void
 row_activated (CertificateDialog *self,
                GtkListBoxRow     *row)
 {
-  accept_clicked (self);
+  if (row == gtk_list_box_get_selected_row (self->candidates))
+    accept_clicked (self);
+}
+
+static gboolean
+candidate_is_usable (GtkListBoxRow *row)
+{
+  return row != NULL && gtk_widget_is_sensitive (GTK_WIDGET (row)) &&
+    gtk_widget_get_visible (GTK_WIDGET (row)) && gtk_list_box_row_get_selectable (row);
+}
+
+static GtkListBoxRow *
+first_usable_candidate (CertificateDialog *self)
+{
+  for (GtkWidget *child = gtk_widget_get_first_child (GTK_WIDGET (self->candidates));
+       child != NULL;
+       child = gtk_widget_get_next_sibling (child))
+    if (candidate_is_usable (GTK_LIST_BOX_ROW (child)))
+      return GTK_LIST_BOX_ROW (child);
+
+  return NULL;
+}
+
+static GtkListBoxRow *
+focused_candidate (CertificateDialog *self)
+{
+  GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (self));
+  GtkWidget *row = focus != NULL ? gtk_widget_get_ancestor (focus, GTK_TYPE_LIST_BOX_ROW) : NULL;
+
+  return row != NULL && gtk_widget_get_parent (row) == GTK_WIDGET (self->candidates) ?
+    GTK_LIST_BOX_ROW (row) : NULL;
+}
+
+static void
+focus_candidates (CertificateDialog *self,
+                  guint64            focused_id)
+{
+  GtkListBoxRow *row = gtk_list_box_get_selected_row (self->candidates);
+
+  if (focused_id != 0)
+    for (GtkWidget *child = gtk_widget_get_first_child (GTK_WIDGET (self->candidates));
+         child != NULL;
+         child = gtk_widget_get_next_sibling (child))
+      if (candidate_is_usable (GTK_LIST_BOX_ROW (child)) &&
+          *(guint64 *) g_object_get_data (G_OBJECT (child), "candidate-id") == focused_id)
+        {
+          row = GTK_LIST_BOX_ROW (child);
+          break;
+        }
+
+  if (!candidate_is_usable (row))
+    row = first_usable_candidate (self);
+
+  /* Focusing a row sets GTK's cursor without selecting or activating it. */
+  gtk_widget_grab_focus (row != NULL ? GTK_WIDGET (row) : GTK_WIDGET (self->cancel));
+}
+
+static gboolean
+candidate_key_pressed (CertificateDialog *self,
+                       guint              keyval,
+                       guint              keycode G_GNUC_UNUSED,
+                       GdkModifierType    state)
+{
+  GtkListBoxRow *row = focused_candidate (self);
+  GtkListBoxRow *selected = gtk_list_box_get_selected_row (self->candidates);
+  gboolean backwards;
+
+  if (state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK | GDK_META_MASK))
+    return GDK_EVENT_PROPAGATE;
+
+  switch (keyval)
+    {
+    case GDK_KEY_Return:
+    case GDK_KEY_KP_Enter:
+      if (row != NULL && row == selected)
+        row_activated (self, row);
+      return GDK_EVENT_STOP;
+    case GDK_KEY_Up:
+    case GDK_KEY_KP_Up:
+      backwards = TRUE;
+      break;
+    case GDK_KEY_Down:
+    case GDK_KEY_KP_Down:
+      backwards = FALSE;
+      break;
+    default:
+      return GDK_EVENT_PROPAGATE;
+    }
+
+  if (!candidate_is_usable (row))
+    row = candidate_is_usable (selected) ? selected : first_usable_candidate (self);
+  else if (row == selected)
+    {
+      GtkWidget *next = GTK_WIDGET (row);
+
+      while ((next = backwards ? gtk_widget_get_prev_sibling (next) : gtk_widget_get_next_sibling (next)))
+        if (candidate_is_usable (GTK_LIST_BOX_ROW (next)))
+          {
+            row = GTK_LIST_BOX_ROW (next);
+            break;
+          }
+    }
+
+  /* The first arrow selects the focused row, including a one-row list.
+   * Subsequent arrows stay within the list; Tab retains normal traversal. */
+  if (row != NULL)
+    {
+      gtk_widget_grab_focus (GTK_WIDGET (row));
+      gtk_list_box_select_row (self->candidates, row);
+    }
+
+  return GDK_EVENT_STOP;
 }
 
 void
@@ -80,16 +200,6 @@ close_request (GtkWindow *window)
 {
   cancel_clicked (CERTIFICATE_DIALOG (window));
   return TRUE;
-}
-
-static GtkWidget *
-plain_label (const char *text)
-{
-  GtkWidget *label = gtk_label_new (text);
-
-  gtk_label_set_wrap (GTK_LABEL (label), TRUE);
-  gtk_label_set_xalign (GTK_LABEL (label), 0);
-  return label;
 }
 
 static void
@@ -161,18 +271,20 @@ certificate_dialog_update (CertificateDialog    *self,
     N_("Client authentication"), N_("Signing"), N_("Email"), N_("SSH authentication")
   };
   guint64 selected = 0;
+  guint64 focused_id = 0;
   GtkListBoxRow *old = gtk_list_box_get_selected_row (self->candidates);
+  GtkListBoxRow *focused_row = focused_candidate (self);
   GtkWidget *child;
   GtkWidget *focus = gtk_root_get_focus (GTK_ROOT (self));
   gboolean list_focused = focus != NULL &&
     (focus == GTK_WIDGET (self->candidates) || gtk_widget_is_ancestor (focus, GTK_WIDGET (self->candidates)));
+  gboolean had_usable_candidates = first_usable_candidate (self) != NULL;
   const char *identity;
   const char *purpose;
   const char *purpose_detail;
   const char *scope;
   g_autofree char *duration = NULL;
   g_autofree char *text = NULL;
-  g_autofree char *reason = NULL;
   g_autofree char *announcement = NULL;
   g_autoptr(GHashTable) candidate_ids = g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free, NULL);
   gboolean new_candidates = FALSE;
@@ -189,6 +301,8 @@ certificate_dialog_update (CertificateDialog    *self,
 
   if (old != NULL)
     selected = *(guint64 *) g_object_get_data (G_OBJECT (old), "candidate-id");
+  if (focused_row != NULL)
+    focused_id = *(guint64 *) g_object_get_data (G_OBJECT (focused_row), "candidate-id");
   self->revision = view->revision;
   self->submitted = FALSE;
   identity = view->identity_level == XCC_IDENTITY_VERIFIED_SANDBOXED ?
@@ -229,16 +343,22 @@ certificate_dialog_update (CertificateDialog    *self,
     view->may_sign ? _("It allows signing only.") : _("It allows no operations.");
   duration = g_strdup_printf (ngettext ("Access lasts %u second.", "Access lasts %u seconds.",
                                         view->lifetime_seconds), view->lifetime_seconds);
-  text = g_strdup_printf (_("%s\n%s\n%s\nPurpose: %s\n%s\n%s %s\nYou may be asked for your PIN the first time the key is used."),
-                          (view->struct_size >= offsetof (XccChooserView, display_flags) + sizeof (view->display_flags) &&
-                           (view->display_flags & XCC_DISPLAY_CALLER_FALLBACK)) || !view->caller_name ?
-                          _("An unidentified application") : view->caller_name,
-                          view->app_id ? view->app_id : "", identity, purpose, purpose_detail, scope, duration);
-  gtk_label_set_text (self->disclosure, text);
-  reason = g_strdup_printf (_("Reason supplied by the application (untrusted):\n%s"),
-                            view->untrusted_reason ? view->untrusted_reason : "");
-  gtk_label_set_text (self->reason, reason);
-  gtk_widget_set_visible (GTK_WIDGET (self->reason),
+  if ((view->struct_size >= offsetof (XccChooserView, display_flags) + sizeof (view->display_flags) &&
+       (view->display_flags & XCC_DISPLAY_CALLER_FALLBACK)) || !view->caller_name)
+    text = g_strdup (_("An unidentified application wants to use a certificate"));
+  else
+    text = g_strdup_printf (_("%s wants to use a certificate"), view->caller_name);
+  gtk_label_set_text (self->heading, text);
+  gtk_label_set_text (self->identity, identity);
+  gtk_label_set_text (self->app_id, view->app_id ? view->app_id : "");
+  gtk_widget_set_visible (GTK_WIDGET (self->app_id), view->app_id && *view->app_id);
+  gtk_label_set_text (self->purpose_detail, purpose_detail);
+  adw_action_row_set_subtitle (self->purpose, purpose);
+  adw_action_row_set_subtitle (self->scope, scope);
+  adw_action_row_set_subtitle (self->duration, duration);
+  gtk_widget_set_visible (self->pin_note, view->later_prompt && *view->later_prompt);
+  gtk_label_set_text (self->reason, view->untrusted_reason ? view->untrusted_reason : "");
+  gtk_widget_set_visible (GTK_WIDGET (self->reason_group),
                           view->untrusted_reason && *view->untrusted_reason);
 
   /* Disable the old snapshot before removing it, including its selection. */
@@ -252,7 +372,7 @@ certificate_dialog_update (CertificateDialog    *self,
   for (size_t i = 0; i < view->n_candidates; i++)
     {
       const XccChooserCandidateView *candidate = xcc_chooser_view_candidate (view, i);
-      GtkWidget *row, *box;
+      GtkWidget *row;
       guint64 *id;
       g_autofree char *details = NULL;
       g_autofree char *validity = NULL;
@@ -266,32 +386,34 @@ certificate_dialog_update (CertificateDialog    *self,
           xcc_ui_failed (self->context, self->id, XCC_ERROR_NOT_SUPPORTED);
           return;
         }
-      row = gtk_list_box_row_new ();
-      box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
-      gtk_widget_set_margin_top (box, 12);
-      gtk_widget_set_margin_bottom (box, 12);
-      gtk_widget_set_margin_start (box, 12);
-      gtk_widget_set_margin_end (box, 12);
+      row = adw_action_row_new ();
+      adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
+      adw_action_row_set_title_lines (ADW_ACTION_ROW (row), 0);
+      adw_action_row_set_subtitle_lines (ADW_ACTION_ROW (row), 0);
+      gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), TRUE);
+      gtk_list_box_row_set_selectable (GTK_LIST_BOX_ROW (row), TRUE);
       validity = format_validity (candidate);
       key = format_key (candidate);
       display_flags = candidate->struct_size >= offsetof (XccChooserCandidateView, display_flags) + sizeof (candidate->display_flags) ?
         candidate->display_flags : 0;
-      gtk_box_append (GTK_BOX (box), plain_label (display_flags & XCC_DISPLAY_SUBJECT_FALLBACK ?
-                                                 _("Unnamed certificate") : candidate->subject));
-      details = g_strdup_printf (_("Issuer: %s\nToken: %s\nReader: %s\n%s\n%s\nFingerprint: %s"),
+      adw_preferences_row_set_title (ADW_PREFERENCES_ROW (row), display_flags & XCC_DISPLAY_SUBJECT_FALLBACK ?
+                                     _("Unnamed certificate") : candidate->subject);
+      details = g_strdup_printf (_("%s · %s\nToken: %s · Reader: %s · %s · Fingerprint: %s"),
                                  display_flags & XCC_DISPLAY_ISSUER_FALLBACK ? _("Unnamed issuer") : candidate->issuer,
+                                 validity,
                                  display_flags & XCC_DISPLAY_TOKEN_FALLBACK ? _("Unnamed token") : candidate->token,
-                                 candidate->reader ? candidate->reader : "",
-                                 validity, key, candidate->fingerprint);
-      gtk_box_append (GTK_BOX (box), plain_label (details));
+                                 candidate->reader ? candidate->reader : "", key, candidate->fingerprint);
+      adw_action_row_set_subtitle (ADW_ACTION_ROW (row), details);
       if (candidate->invalid)
         {
-          GtkWidget *warning = plain_label (_("This certificate is expired or not yet valid"));
+          GtkWidget *warning = gtk_image_new_from_icon_name ("dialog-warning-symbolic");
 
           gtk_widget_add_css_class (warning, "warning");
-          gtk_box_append (GTK_BOX (box), warning);
+          gtk_widget_set_tooltip_text (warning, _("This certificate is expired or not yet valid"));
+          gtk_accessible_update_property (GTK_ACCESSIBLE (warning), GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                           _("This certificate is expired or not yet valid"), -1);
+          adw_action_row_add_prefix (ADW_ACTION_ROW (row), warning);
         }
-      gtk_list_box_row_set_child (GTK_LIST_BOX_ROW (row), box);
       id = g_new (guint64, 1);
       *id = candidate->id;
       g_object_set_data_full (G_OBJECT (row), "candidate-id", id, g_free);
@@ -309,10 +431,10 @@ certificate_dialog_update (CertificateDialog    *self,
   gtk_widget_set_visible (GTK_WIDGET (self->empty), view->n_candidates == 0);
   adw_status_page_set_description (self->empty, view->tokens_present ?
     _("No certificates on the inserted tokens match this request.") : NULL);
-  gtk_widget_set_visible (GTK_WIDGET (self->candidates), view->n_candidates != 0);
+  gtk_widget_set_visible (GTK_WIDGET (self->candidate_group), view->n_candidates != 0);
   row_selected (self, gtk_list_box_get_selected_row (self->candidates));
-  if (list_focused)
-    gtk_widget_grab_focus (view->n_candidates ? GTK_WIDGET (self->candidates) : GTK_WIDGET (self->cancel));
+  if (list_focused || (!had_usable_candidates && first_usable_candidate (self) != NULL))
+    focus_candidates (self, focused_id);
 
   if (view->n_candidates == 0)
     announcement = g_strdup (view->tokens_present ?
@@ -353,7 +475,16 @@ certificate_dialog_class_init (CertificateDialogClass *klass)
   GTK_WINDOW_CLASS (klass)->close_request = close_request;
   gtk_widget_class_set_template_from_resource (widget_class,
     "/org/freedesktop/portal/desktop/gnome/certificatedialog.ui");
-  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, disclosure);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, heading);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, identity);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, app_id);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, purpose_detail);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, purpose);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, scope);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, duration);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, pin_note);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, reason_group);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, candidate_group);
   gtk_widget_class_bind_template_child (widget_class, CertificateDialog, reason);
   gtk_widget_class_bind_template_child (widget_class, CertificateDialog, empty);
   gtk_widget_class_bind_template_child (widget_class, CertificateDialog, candidates);
@@ -368,7 +499,13 @@ certificate_dialog_class_init (CertificateDialogClass *klass)
 static void
 certificate_dialog_init (CertificateDialog *self)
 {
+  GtkEventController *keys;
+
   gtk_widget_init_template (GTK_WIDGET (self));
+  keys = gtk_event_controller_key_new ();
+  gtk_event_controller_set_propagation_phase (keys, GTK_PHASE_CAPTURE);
+  g_signal_connect_swapped (keys, "key-pressed", G_CALLBACK (candidate_key_pressed), self);
+  gtk_widget_add_controller (GTK_WIDGET (self->candidates), keys);
   g_signal_connect_data (self, "map", G_CALLBACK (announce_state), self, NULL,
                          G_CONNECT_AFTER | G_CONNECT_SWAPPED);
 }
@@ -386,8 +523,8 @@ certificate_dialog_new (XccContext           *context,
   gtk_window_set_default_widget (GTK_WINDOW (self), GTK_WIDGET (self->accept));
   if (!self->hidden)
     {
+      focus_candidates (self, 0);
       certificate_window_present (GTK_WINDOW (self), view->parent_window, view->activation_token);
-      gtk_widget_grab_focus (view->n_candidates ? GTK_WIDGET (self->candidates) : GTK_WIDGET (self->cancel));
     }
   return self;
 }
