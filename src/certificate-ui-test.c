@@ -22,6 +22,20 @@ static guint ui_holds;
 static guint failures;
 static gboolean open_fails;
 static XccContext *context = (XccContext *) &ui_holds;
+static guint choices;
+static XccUiId chosen_id;
+static uint64_t chosen_revision, chosen_candidate;
+
+/* Capture chooser consent at the test executable's SDK boundary. */
+void
+xcc_choose (XccContext *value, XccUiId id, uint64_t revision, uint64_t candidate)
+{
+  g_assert_true (value == context);
+  choices++;
+  chosen_id = id;
+  chosen_revision = revision;
+  chosen_candidate = candidate;
+}
 
 void
 __wrap_xcc_context_hold_ui (XccContext *value)
@@ -335,6 +349,143 @@ test_details (void)
   destroy_chooser (dialog);
 }
 
+static GtkWidget *
+find_spinner (GtkWidget *widget)
+{
+  if (GTK_IS_SPINNER (widget))
+    return widget;
+  for (GtkWidget *child = gtk_widget_get_first_child (widget); child != NULL;
+       child = gtk_widget_get_next_sibling (child))
+    {
+      GtkWidget *found = find_spinner (child);
+
+      if (found != NULL)
+        return found;
+    }
+  return NULL;
+}
+
+static void
+test_reading (void)
+{
+  XccChooserView view = chooser_view ();
+  CertificateDialog *dialog = g_object_ref_sink (certificate_dialog_new (context, 1, &view));
+  GtkWidget *accept = GTK_WIDGET (gtk_widget_get_template_child (GTK_WIDGET (dialog), CERTIFICATE_TYPE_DIALOG, "accept"));
+  GtkListBox *candidates = GTK_LIST_BOX (gtk_widget_get_template_child (GTK_WIDGET (dialog), CERTIFICATE_TYPE_DIALOG, "candidates"));
+  GtkSpinner *spinner = GTK_SPINNER (find_spinner (GTK_WIDGET (dialog)));
+  GtkStack *status;
+  GtkWidget *placeholder;
+  GtkLabel *heading;
+  GtkLabel *body;
+
+  g_assert_nonnull (spinner);
+  status = GTK_STACK (gtk_widget_get_parent (GTK_WIDGET (spinner)));
+  placeholder = gtk_widget_get_parent (GTK_WIDGET (status));
+  heading = GTK_LABEL (gtk_widget_get_next_sibling (GTK_WIDGET (status)));
+  body = GTK_LABEL (gtk_widget_get_next_sibling (GTK_WIDGET (heading)));
+  g_assert_cmpstr (gtk_label_get_text (heading), ==, _("Insert your security token"));
+  g_assert_false (gtk_spinner_get_spinning (spinner));
+  for (guint i = 0; i < 2; i++)
+    {
+      view.tokens_present = i;
+      view.tokens_reading = TRUE;
+      view.revision++;
+      certificate_dialog_update (dialog, &view);
+      g_assert_cmpstr (gtk_label_get_text (heading), ==, _("Reading security token…"));
+      g_assert_cmpstr (gtk_label_get_text (body), ==, _("This can take a few seconds."));
+      g_assert_true (gtk_widget_has_css_class (GTK_WIDGET (body), "dim-label"));
+      g_assert_true (gtk_widget_get_child_visible (placeholder));
+      g_assert_true (gtk_stack_get_visible_child (status) == GTK_WIDGET (spinner));
+      g_assert_true (gtk_spinner_get_spinning (spinner));
+      g_assert_false (gtk_widget_get_sensitive (accept));
+      gtk_test_accessible_assert_property (candidates, GTK_ACCESSIBLE_PROPERTY_LABEL,
+                                           _("Reading security token… This can take a few seconds."));
+      certificate_dialog_update (dialog, &view);
+      g_assert_false (gtk_widget_get_sensitive (accept));
+      view.tokens_reading = FALSE;
+      view.revision++;
+      certificate_dialog_update (dialog, &view);
+      g_assert_cmpstr (gtk_label_get_text (heading), ==, i ?
+                       _("No usable certificates on this token") : _("Insert your security token"));
+      g_assert_cmpstr (gtk_label_get_text (body), ==, i ?
+                       _("Try a different security token.") : _("Certificates on it will appear here."));
+      g_assert_false (gtk_spinner_get_spinning (spinner));
+    }
+  view.tokens_reading = TRUE;
+  view.struct_size = offsetof (XccChooserView, tokens_reading);
+  certificate_dialog_update (dialog, &view);
+  g_assert_cmpstr (gtk_label_get_text (heading), ==, _("No usable certificates on this token"));
+  g_assert_false (gtk_spinner_get_spinning (spinner));
+  g_assert_false (gtk_widget_get_sensitive (accept));
+
+  XccChooserCandidateView candidate = {
+    .struct_size = sizeof (candidate), .abi_version = XCC_ABI_VERSION, .id = 1,
+    .subject = "Subject", .issuer = "Issuer", .token = "Token", .key_type = "RSA"
+  };
+  view.struct_size = sizeof (view);
+  view.tokens_reading = FALSE;
+  view.candidates = &candidate;
+  view.n_candidates = 1;
+  view.revision++;
+  certificate_dialog_update (dialog, &view);
+  GtkListBoxRow *row = gtk_list_box_get_row_at_index (candidates, 0);
+
+  g_assert_nonnull (row);
+  g_object_ref (row);
+  gtk_list_box_select_row (candidates, row);
+  g_assert_true (gtk_widget_get_sensitive (accept));
+  gtk_window_present (GTK_WINDOW (dialog));
+  while (g_main_context_iteration (NULL, FALSE))
+    ;
+  GtkMenuButton *details = GTK_MENU_BUTTON (find_menu_button (GTK_WIDGET (row)));
+  GtkPopover *popover = gtk_menu_button_get_popover (details);
+  XccChooserCandidateView refreshed = candidate;
+  const gboolean reading_states[] = { TRUE, FALSE, TRUE, FALSE };
+
+  gtk_menu_button_popup (details);
+  g_assert_true (gtk_widget_get_visible (GTK_WIDGET (popover)));
+  choices = 0;
+  for (guint i = 0; i < G_N_ELEMENTS (reading_states); i++)
+    {
+      /* Reading on/off, then reading followed by a fresh completed snapshot. */
+      view.tokens_reading = reading_states[i];
+      view.revision++;
+      if (i == G_N_ELEMENTS (reading_states) - 1)
+        view.candidates = &refreshed;
+      certificate_dialog_update (dialog, &view);
+      g_assert_true (gtk_list_box_get_row_at_index (candidates, 0) == row);
+      g_assert_true (gtk_list_box_get_selected_row (candidates) == row);
+      g_assert_true (gtk_widget_get_sensitive (accept));
+      g_assert_false (gtk_spinner_get_spinning (spinner));
+      g_assert_true (gtk_widget_get_visible (GTK_WIDGET (popover)));
+      g_signal_emit_by_name (accept, "clicked");
+      g_assert_cmpuint (choices, ==, i + 1);
+      g_assert_cmpuint (chosen_id, ==, 1);
+      g_assert_cmpuint (chosen_revision, ==, view.revision);
+      g_assert_cmpuint (chosen_candidate, ==, candidate.id);
+      g_assert_false (gtk_widget_get_sensitive (accept));
+      g_signal_emit_by_name (accept, "clicked");
+      g_assert_cmpuint (choices, ==, i + 1);
+    }
+
+  /* A details-only change must still replace the row, even with the same ID. */
+  gtk_menu_button_popdown (details);
+  view.tokens_reading = TRUE;
+  refreshed.fingerprint = "AB:CD";
+  view.revision++;
+  certificate_dialog_update (dialog, &view);
+  GtkListBoxRow *updated = gtk_list_box_get_row_at_index (candidates, 0);
+  GtkGrid *grid = GTK_GRID (gtk_popover_get_child (gtk_menu_button_get_popover (
+    GTK_MENU_BUTTON (find_menu_button (GTK_WIDGET (updated))))));
+
+  g_assert_true (updated != row);
+  g_assert_true (gtk_list_box_get_selected_row (candidates) == updated);
+  g_assert_cmpstr (gtk_label_get_text (GTK_LABEL (gtk_grid_get_child_at (grid, 1, 6))), ==, refreshed.fingerprint);
+  g_assert_true (gtk_widget_get_sensitive (accept));
+  g_object_unref (row);
+  destroy_chooser (dialog);
+}
+
 static void
 test_window_groups (void)
 {
@@ -414,12 +565,16 @@ int
 main (int argc, char **argv)
 {
   g_test_init (&argc, &argv, NULL);
+  /* Accessible property assertions need an AT context, even when Meson
+   * disables the platform accessibility backend with GTK_A11Y=none. */
+  g_setenv ("GTK_A11Y", "test", TRUE);
   if (!gtk_init_check ())
     return 77;
   adw_init ();
   g_test_add_func ("/certificate/chooser/identity", test_identity);
   g_test_add_func ("/certificate/chooser/body", test_body);
   g_test_add_func ("/certificate/chooser/details", test_details);
+  g_test_add_func ("/certificate/chooser/reading", test_reading);
   g_test_add_func ("/certificate/window-groups", test_window_groups);
   g_test_add_func ("/certificate/system/pending-open", test_pending_open);
   g_test_add_func ("/certificate/system/open-failure", test_open_failure);

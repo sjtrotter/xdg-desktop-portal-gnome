@@ -22,6 +22,8 @@ struct _CertificateDialog
   GtkLabel *body;
   GtkImage *icon;
   GtkWidget *empty;
+  GtkStack *empty_status;
+  GtkSpinner *empty_spinner;
   GtkLabel *empty_heading;
   GtkLabel *empty_body;
   GtkLabel *reason;
@@ -420,6 +422,46 @@ certificate_details (const XccChooserCandidateView *candidate,
   return button;
 }
 
+static GVariant *
+candidate_contents (const XccChooserCandidateView *candidate)
+{
+  g_autofree char *validity = format_validity (candidate);
+  g_autofree char *key = format_key (candidate);
+  guint32 display_flags = candidate->struct_size >= offsetof (XccChooserCandidateView, display_flags) + sizeof (candidate->display_flags) ?
+    candidate->display_flags : 0;
+  guint32 validity_state = candidate->struct_size >= offsetof (XccChooserCandidateView, validity) + sizeof (candidate->validity) ?
+    candidate->validity : XCC_VALIDITY_UNKNOWN;
+
+  return g_variant_ref_sink (g_variant_new ("(tsssssssbuu)", candidate->id,
+    candidate->subject ? candidate->subject : "", candidate->issuer ? candidate->issuer : "",
+    candidate->token ? candidate->token : "", candidate->reader ? candidate->reader : "",
+    candidate->fingerprint ? candidate->fingerprint : "", validity, key,
+    candidate->invalid, display_flags, validity_state));
+}
+
+static gboolean
+candidate_rows_match (CertificateDialog    *self,
+                      const XccChooserView *view)
+{
+  GtkListBoxRow *row = gtk_list_box_get_row_at_index (self->candidates, 0);
+
+  for (size_t i = 0; i < view->n_candidates; i++)
+    {
+      const XccChooserCandidateView *candidate = xcc_chooser_view_candidate (view, i);
+      GVariant *previous = row != NULL ? g_object_get_data (G_OBJECT (row), "candidate-contents") : NULL;
+      g_autoptr(GVariant) contents = NULL;
+
+      if (previous == NULL || candidate == NULL || candidate->abi_version != XCC_ABI_VERSION ||
+          candidate->struct_size < XCC_CHOOSER_CANDIDATE_VIEW_V1_SIZE || candidate->id == 0)
+        return FALSE;
+      contents = candidate_contents (candidate);
+      if (!g_variant_equal (previous, contents))
+        return FALSE;
+      row = gtk_list_box_get_row_at_index (self->candidates, i + 1);
+    }
+  return row == NULL;
+}
+
 void
 certificate_dialog_update (CertificateDialog    *self,
                            const XccChooserView *view)
@@ -446,6 +488,8 @@ certificate_dialog_update (CertificateDialog    *self,
   g_autofree char *announcement = NULL;
   g_autoptr(GHashTable) candidate_ids = g_hash_table_new_full (g_int64_hash, g_int64_equal, g_free, NULL);
   gboolean new_candidates = FALSE;
+  gboolean reading;
+  gboolean rows_changed;
 
   if (self->hidden)
     return;
@@ -456,6 +500,9 @@ certificate_dialog_update (CertificateDialog    *self,
       xcc_ui_failed (self->context, self->id, XCC_ERROR_NOT_SUPPORTED);
       return;
     }
+
+  reading = view->n_candidates == 0 && xcc_chooser_view_tokens_reading (view);
+  rows_changed = !candidate_rows_match (self, view);
 
   if (old != NULL)
     selected = *(guint64 *) g_object_get_data (G_OBJECT (old), "candidate-id");
@@ -488,18 +535,22 @@ certificate_dialog_update (CertificateDialog    *self,
   gtk_label_set_text (self->reason, reason ? reason : "");
   gtk_widget_set_visible (GTK_WIDGET (self->reason), reason != NULL);
 
-  /* Disable the old snapshot before removing it, including its selection. */
-  gtk_widget_set_sensitive (GTK_WIDGET (self->accept), FALSE);
-  child = gtk_widget_get_first_child (GTK_WIDGET (self->candidates));
-  while (child != NULL)
+  /* Revision changes alone must preserve rows and open certificate details. */
+  if (rows_changed)
     {
-      GtkWidget *next = gtk_widget_get_next_sibling (child);
-      if (GTK_IS_LIST_BOX_ROW (child))
+      /* Disable the old snapshot before removing it, including its selection. */
+      gtk_widget_set_sensitive (GTK_WIDGET (self->accept), FALSE);
+      child = gtk_widget_get_first_child (GTK_WIDGET (self->candidates));
+      while (child != NULL)
         {
-          gtk_widget_set_sensitive (child, FALSE);
-          gtk_list_box_remove (self->candidates, child);
+          GtkWidget *next = gtk_widget_get_next_sibling (child);
+          if (GTK_IS_LIST_BOX_ROW (child))
+            {
+              gtk_widget_set_sensitive (child, FALSE);
+              gtk_list_box_remove (self->candidates, child);
+            }
+          child = next;
         }
-      child = next;
     }
 
   for (size_t i = 0; i < view->n_candidates; i++)
@@ -520,6 +571,12 @@ certificate_dialog_update (CertificateDialog    *self,
           xcc_ui_failed (self->context, self->id, XCC_ERROR_NOT_SUPPORTED);
           return;
         }
+      if (self->candidate_ids == NULL || !g_hash_table_contains (self->candidate_ids, &candidate->id))
+        new_candidates = TRUE;
+      g_hash_table_add (candidate_ids, g_memdup2 (&candidate->id, sizeof (candidate->id)));
+      if (!rows_changed)
+        continue;
+
       row = adw_action_row_new ();
       adw_preferences_row_set_use_markup (ADW_PREFERENCES_ROW (row), FALSE);
       adw_action_row_set_title_lines (ADW_ACTION_ROW (row), 2);
@@ -561,9 +618,8 @@ certificate_dialog_update (CertificateDialog    *self,
       id = g_new (guint64, 1);
       *id = candidate->id;
       g_object_set_data_full (G_OBJECT (row), "candidate-id", id, g_free);
-      if (self->candidate_ids == NULL || !g_hash_table_contains (self->candidate_ids, id))
-        new_candidates = TRUE;
-      g_hash_table_add (candidate_ids, g_memdup2 (id, sizeof (*id)));
+      g_object_set_data_full (G_OBJECT (row), "candidate-contents", candidate_contents (candidate),
+                              (GDestroyNotify) g_variant_unref);
       /* Certificates with invalid dates remain selectable and show a warning. */
       gtk_list_box_append (self->candidates, row);
       if (selected == candidate->id)
@@ -571,16 +627,18 @@ certificate_dialog_update (CertificateDialog    *self,
     }
 
   candidate_adjustment_changed (self, gtk_scrollable_get_vadjustment (GTK_SCROLLABLE (self->candidate_viewport)));
-  gtk_label_set_text (self->empty_heading, view->tokens_present ?
+  gtk_stack_set_visible_child_name (self->empty_status, reading ? "reading" : "idle");
+  gtk_spinner_set_spinning (self->empty_spinner, reading);
+  gtk_label_set_text (self->empty_heading, reading ? _("Reading security token…") : view->tokens_present ?
                       _("No usable certificates on this token") : _("Insert your security token"));
-  gtk_label_set_text (self->empty_body, view->tokens_present ?
+  gtk_label_set_text (self->empty_body, reading ? _("This can take a few seconds.") : view->tokens_present ?
                       _("Try a different security token.") : _("Certificates on it will appear here."));
   row_selected (self, gtk_list_box_get_selected_row (self->candidates));
-  if (list_focused || (!had_usable_candidates && first_usable_candidate (self) != NULL))
+  if (rows_changed && (list_focused || (!had_usable_candidates && first_usable_candidate (self) != NULL)))
     focus_candidates (self, focused_id);
 
   if (view->n_candidates == 0)
-    announcement = g_strdup (view->tokens_present ?
+    announcement = g_strdup (reading ? _("Reading security token… This can take a few seconds.") : view->tokens_present ?
       _("No usable certificates on this token. Try a different security token.") :
       _("Insert your security token. Certificates on it will appear here."));
   else
@@ -666,7 +724,13 @@ certificate_dialog_init (CertificateDialog *self)
   gtk_label_set_justify (self->empty_body, GTK_JUSTIFY_CENTER);
   gtk_widget_add_css_class (GTK_WIDGET (self->empty_heading), "heading");
   gtk_widget_add_css_class (GTK_WIDGET (self->empty_body), "dim-label");
-  gtk_box_append (GTK_BOX (self->empty), empty_icon);
+  self->empty_status = GTK_STACK (gtk_stack_new ());
+  gtk_widget_set_size_request (GTK_WIDGET (self->empty_status), 32, 32);
+  gtk_widget_set_halign (GTK_WIDGET (self->empty_status), GTK_ALIGN_CENTER);
+  self->empty_spinner = GTK_SPINNER (gtk_spinner_new ());
+  gtk_stack_add_named (self->empty_status, empty_icon, "idle");
+  gtk_stack_add_named (self->empty_status, GTK_WIDGET (self->empty_spinner), "reading");
+  gtk_box_append (GTK_BOX (self->empty), GTK_WIDGET (self->empty_status));
   gtk_box_append (GTK_BOX (self->empty), GTK_WIDGET (self->empty_heading));
   gtk_box_append (GTK_BOX (self->empty), GTK_WIDGET (self->empty_body));
   gtk_list_box_set_placeholder (self->candidates, self->empty);
