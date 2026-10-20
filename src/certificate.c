@@ -14,6 +14,7 @@
 #include <xdp-certificate/ui.h>
 
 #include "certificate.h"
+#include "certificate-results.h"
 #include "certificatedialog.h"
 #include "certificatepindialog.h"
 #include "xdg-desktop-portal-dbus.h"
@@ -81,16 +82,6 @@ string_variant (const char *value)
   /* SDK display strings can be NULL, including reader in original-prefix and
    * partial-extension candidate layouts. Apply this to every result string. */
   return g_variant_new_string (value != NULL ? value : "");
-}
-
-static GVariant *
-error_results (const char *code)
-{
-  GVariantBuilder builder;
-
-  g_variant_builder_init (&builder, G_VARIANT_TYPE_VARDICT);
-  g_variant_builder_add (&builder, "{sv}", "error", string_variant (code));
-  return g_variant_builder_end (&builder);
 }
 
 static void
