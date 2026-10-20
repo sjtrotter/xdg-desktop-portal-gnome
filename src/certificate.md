@@ -33,8 +33,8 @@ with `AllowSoftwareTokens=false`; the SDK's module policy is unchanged.
 made for each PIN request. `auto` uses Gcr's system prompter when
 `org.gnome.keyring.SystemPrompter` has an owner on the session bus; otherwise it
 uses this backend's GTK dialog. `system` requires an existing prompter owner.
-When unavailable, the backend reports `XCC_ERROR_NO_DISPLAY` to the SDK, but the
-SDK's PIN failure path discards that error and `Sign` returns `device_error`.
+When unavailable, the backend reports `XCC_ERROR_NO_DISPLAY` to the SDK.
+Public `Sign` reports failure with response 2.
 `dialog` always uses the GTK dialog. A system prompt that fails to open or
 disappears settles the request; it never silently switches to the GTK dialog.
 Invalid values prevent Certificate initialization. This setting is not read

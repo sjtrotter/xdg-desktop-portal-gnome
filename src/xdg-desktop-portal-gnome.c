@@ -123,6 +123,9 @@ on_bus_acquired (GDBusConnection *connection,
       g_clear_error (&error);
     }
 
+  if (settings_only)
+    return;
+
 #ifdef HAVE_CERTIFICATE
   if (!certificate_init (connection, &error))
     {
@@ -130,9 +133,6 @@ on_bus_acquired (GDBusConnection *connection,
       g_clear_error (&error);
     }
 #endif
-
-  if (settings_only)
-    return;
 
   if (!file_chooser_init (connection, &error))
     {

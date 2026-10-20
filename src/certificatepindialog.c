@@ -633,7 +633,7 @@ certificate_pin_dialog_finalize (GObject *object)
 
   g_free (self->status);
   if (self->system)
-    xcc_context_unref (self->context);
+    xcc_context_release_ui (self->context);
   G_OBJECT_CLASS (certificate_pin_dialog_parent_class)->finalize (object);
 }
 
@@ -691,7 +691,8 @@ certificate_pin_system_new (XccContext       *context,
 
   self->system = TRUE;
   /* Async open/round/close callbacks can outlive the SDK's close notification. */
-  self->context = xcc_context_ref (context);
+  xcc_context_hold_ui (context);
+  self->context = context;
   self->id = id;
   certificate_pin_dialog_update (self, view);
   if (!self->hidden)

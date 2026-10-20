@@ -20,14 +20,15 @@
 
   IT MUST TRACK THAT FILE. The interface is defined by the portal frontend, not
   by this backend; a divergence here is a backend that no longer implements the
-  interface it claims in data/certificate.portal.in. To update, copy the
+  interface it claims in data/gnome.portal.in. To update, copy the
   branch's file again and change the commit id above. Never hand edit the
   interface.
 
   Upstream keeps org.freedesktop.impl.portal.*.xml in xdg-desktop-portal itself,
   and backends read it out of that project's pkg-config interfaces directory.
   This copy exists only because the branch is unmerged and no released
-  xdg-desktop-portal ships the file yet. See docs/IMPL-INTERFACE.md.
+  xdg-desktop-portal ships the file yet. Interface maintenance is documented in
+  https://github.com/sjtrotter/xdg-desktop-portal-certificate/blob/main/docs/IMPL-INTERFACE.md.
 -->
 
 <node name="/" xmlns:doc="http://www.freedesktop.org/dbus/1.0/doc.dtd">

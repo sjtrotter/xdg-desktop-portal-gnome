@@ -19,3 +19,9 @@ option('certificate',
   value: 'disabled',
   description: 'Enable the experimental Certificate1 portal'
 )
+
+option('tests',
+  type: 'boolean',
+  value: false,
+  description: 'Build tests'
+)

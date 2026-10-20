@@ -33,10 +33,8 @@ if dbus_service_dir == ''
 endif
 
 certificate_dep = dependency('xdp-certificate-core-0', required: get_option('certificate'))
-certificate_enabled = certificate_dep.found()
-if certificate_enabled
-  certificate_gcr_dep = dependency('gcr-4')
-endif
+certificate_gcr_dep = dependency('gcr-4', required: get_option('certificate'))
+certificate_enabled = certificate_dep.found() and certificate_gcr_dep.found()
 
 subdir('data')
 subdir('po')

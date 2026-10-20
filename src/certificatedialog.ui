@@ -48,6 +48,11 @@
             <property name="justify">center</property>
             <style><class name="title-2"/></style>
           </object></child>
+          <child><object class="GtkLabel" id="app_id">
+            <property name="ellipsize">end</property>
+            <property name="justify">center</property>
+            <style><class name="dim-label"/><class name="caption"/></style>
+          </object></child>
           <child><object class="GtkLabel" id="body">
             <property name="wrap">True</property>
             <property name="justify">center</property>

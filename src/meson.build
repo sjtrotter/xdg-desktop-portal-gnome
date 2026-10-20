@@ -142,24 +142,70 @@ sources = built_sources + files(
 if certificate_enabled
   deps += [certificate_dep, certificate_gcr_dep]
   sources += files('certificate.c', 'certificatedialog.c', 'certificatepindialog.c')
-  sources += gnome.compile_resources(
+  certificate_resources = gnome.compile_resources(
     'certificate-resources',
     'certificate.gresource.xml',
     c_name: '_certificate',
   )
+  sources += certificate_resources
 endif
 
 common_flags = []
 
 add_project_arguments(common_flags, language: 'c')
 
-executable(
+portal_executable = executable(
   'xdg-desktop-portal-gnome',
   sources,
   dependencies: deps,
   install: true,
   install_dir: libexecdir,
 )
+
+if get_option('tests')
+  certificate_python = find_program('python3', native: true)
+  test('certificate-dependencies', certificate_python,
+    args: [files('certificate-dependencies-test.py'), meson.project_source_root()],
+    timeout: 120,
+  )
+
+  if certificate_enabled and meson.can_run_host_binaries()
+    certificate_ui_test = executable(
+      'certificate-ui-test',
+      files('certificate-ui-test.c', 'certificate.c', 'certificatedialog.c', 'certificatepindialog.c'),
+      certificate_resources,
+      dependencies: deps,
+      link_args: [
+        '-Wl,--wrap=xcc_context_hold_ui',
+        '-Wl,--wrap=xcc_context_release_ui',
+        '-Wl,--wrap=xcc_pin_ready',
+        '-Wl,--wrap=xcc_ui_failed',
+        '-Wl,--wrap=gcr_system_prompt_open_for_prompter_async',
+        '-Wl,--wrap=gcr_system_prompt_open_finish',
+        '-Wl,--wrap=gcr_prompt_password_async',
+        '-Wl,--wrap=gcr_prompt_password_finish',
+        '-Wl,--wrap=gcr_prompt_confirm_async',
+        '-Wl,--wrap=gcr_prompt_confirm_finish',
+        '-Wl,--wrap=gcr_prompt_close',
+        '-Wl,--wrap=gcr_system_prompt_close_async',
+        '-Wl,--wrap=gcr_system_prompt_close_finish',
+      ],
+    )
+    test('certificate-ui', certificate_python,
+      args: [files('certificate-test-session.py'), certificate_python.full_path(),
+             files('certificate-ui-test.py'), certificate_ui_test],
+      env: ['GTK_A11Y=none', 'GSETTINGS_BACKEND=memory', 'GTK_USE_PORTAL=0'],
+      timeout: 60,
+    )
+    test('certificate-settings-only', certificate_python,
+      args: [files('certificate-test-session.py'), certificate_python.full_path(),
+             files('certificate-settings-test.py'), portal_executable],
+      timeout: 60,
+    )
+  elif certificate_enabled
+    message('Skipping Certificate UI and settings tests: host binaries cannot run')
+  endif
+endif
 
 install_data (
   'xdg-desktop-portal-gnome.gschema.xml',

@@ -873,7 +873,11 @@ certificate_window_present (GtkWindow  *window,
                             const char *parent_window,
                             const char *activation_token)
 {
+  g_autoptr(GtkWindowGroup) window_group = NULL;
   GxdpExternalWindow *parent = NULL;
+
+  window_group = gtk_window_group_new ();
+  gtk_window_group_add_window (window_group, window);
 
   gtk_widget_realize (GTK_WIDGET (window));
   if (parent_window != NULL && *parent_window != '\0')
@@ -1119,9 +1123,7 @@ certificate_init (GDBusConnection *connection,
 
   if (certificate != NULL)
     return TRUE;
-  /* This experimental interface has no GSettings schema. Snapshot a keyfile
-   * at startup for now; GNOME reviewers may prefer GSettings before merging.
-   * Module and software-token policy never come from environment variables. */
+  /* Read Certificate configuration once at startup. */
   user_config = g_build_filename (g_get_user_config_dir (), "xdg-desktop-portal-gnome", "certificate.conf", NULL);
   if (!read_config_file ("/etc/xdg/xdg-desktop-portal-gnome/certificate.conf", &modules, &allow_software, &pin_prompt, error) ||
       !read_config_file (user_config, &modules, &allow_software, &pin_prompt, error))

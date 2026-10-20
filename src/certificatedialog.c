@@ -17,6 +17,7 @@ struct _CertificateDialog
   gboolean announcement_pending;
   GHashTable *candidate_ids;
   GtkLabel *heading;
+  GtkLabel *app_id;
   GtkLabel *identity;
   GtkLabel *body;
   GtkImage *icon;
@@ -290,7 +291,7 @@ format_key (const XccChooserCandidateView *candidate)
   const char *key_type;
 
   if (candidate->struct_size < offsetof (XccChooserCandidateView, key_size) + sizeof (candidate->key_size))
-    return g_strdup (candidate->detail);
+    return g_strdup (_("Unknown key type"));
   key_type = candidate->key_type;
   if (key_type == NULL || *key_type == '\0')
     key_type = _("Unknown key type");
@@ -352,9 +353,7 @@ format_body (const XccChooserView *view)
           _("It can sign documents and data for %s.");
       sentence = g_strdup_printf (format, duration);
     }
-  /* This is a signal from the SDK, not a guess based on token capabilities. */
-  return view->later_prompt && *view->later_prompt ?
-    g_strconcat (sentence, " ", _("You will enter your PIN next."), NULL) : g_steal_pointer (&sentence);
+  return g_steal_pointer (&sentence);
 }
 
 static void
@@ -397,6 +396,7 @@ certificate_details (const XccChooserCandidateView *candidate,
   GtkWidget *button = gtk_menu_button_new ();
   GtkWidget *popover = gtk_popover_new ();
   GtkWidget *grid = gtk_grid_new ();
+  g_autofree char *validity = format_validity (candidate);
 
   gtk_menu_button_set_icon_name (GTK_MENU_BUTTON (button), "help-about-symbolic");
   gtk_widget_add_css_class (button, "flat");
@@ -413,7 +413,7 @@ certificate_details (const XccChooserCandidateView *candidate,
   add_detail (GTK_GRID (grid), 2, _("Security token"), flags & XCC_DISPLAY_TOKEN_FALLBACK ? _("Unnamed token") : candidate->token, FALSE);
   add_detail (GTK_GRID (grid), 3, _("Reader"), candidate->reader, FALSE);
   add_detail (GTK_GRID (grid), 4, _("Key"), key, FALSE);
-  add_detail (GTK_GRID (grid), 5, _("Details"), candidate->detail, FALSE);
+  add_detail (GTK_GRID (grid), 5, _("Validity"), validity, FALSE);
   add_detail (GTK_GRID (grid), 6, _("Fingerprint"), candidate->fingerprint, TRUE);
   gtk_popover_set_child (GTK_POPOVER (popover), grid);
   gtk_menu_button_set_popover (GTK_MENU_BUTTON (button), popover);
@@ -471,6 +471,8 @@ certificate_dialog_update (CertificateDialog    *self,
                           _("%s wants to use a certificate") : _(headings[view->purpose]), caller);
   body = format_body (view);
   gtk_label_set_text (self->heading, text);
+  gtk_label_set_text (self->app_id, !unknown && view->app_id != NULL ? view->app_id : "");
+  gtk_widget_set_visible (GTK_WIDGET (self->app_id), *gtk_label_get_text (self->app_id));
   gtk_label_set_text (self->body, body);
   gtk_label_set_text (self->identity, unknown ?
                       _("This app could not be identified. Continue only if you started this.") :
@@ -562,9 +564,7 @@ certificate_dialog_update (CertificateDialog    *self,
       if (self->candidate_ids == NULL || !g_hash_table_contains (self->candidate_ids, id))
         new_candidates = TRUE;
       g_hash_table_add (candidate_ids, g_memdup2 (id, sizeof (*id)));
-      /* invalid denotes certificate dates, not a stale token: like the
-       * reference UI, retain these certificates with a warning. Removed rows
-       * disappear in the core's immediate replacement snapshot. */
+      /* Certificates with invalid dates remain selectable and show a warning. */
       gtk_list_box_append (self->candidates, row);
       if (selected == candidate->id)
         gtk_list_box_select_row (self->candidates, GTK_LIST_BOX_ROW (row));
@@ -619,6 +619,7 @@ certificate_dialog_class_init (CertificateDialogClass *klass)
   gtk_widget_class_set_template_from_resource (widget_class,
     "/org/freedesktop/portal/desktop/gnome/certificatedialog.ui");
   gtk_widget_class_bind_template_child (widget_class, CertificateDialog, heading);
+  gtk_widget_class_bind_template_child (widget_class, CertificateDialog, app_id);
   gtk_widget_class_bind_template_child (widget_class, CertificateDialog, identity);
   gtk_widget_class_bind_template_child (widget_class, CertificateDialog, body);
   gtk_widget_class_bind_template_child (widget_class, CertificateDialog, icon);
