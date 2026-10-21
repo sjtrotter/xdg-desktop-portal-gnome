@@ -18,9 +18,12 @@ typedef struct
 } Pending;
 
 static Pending open_pending, round_pending, close_pending;
+static GcrSystemPrompt *closing_prompt;
 static guint ui_holds;
 static guint failures;
 static gboolean open_fails;
+static const char *password_answer;
+static guint submissions;
 static XccContext *context = (XccContext *) &ui_holds;
 static guint choices;
 static XccUiId chosen_id;
@@ -58,6 +61,15 @@ __wrap_xcc_pin_ready (XccContext *value, XccUiId id)
 }
 
 void
+__wrap_xcc_pin_submit (XccContext *value, XccUiId id, XccSecret *secret)
+{
+  g_assert_true (value == context);
+  g_assert_nonnull (secret);
+  submissions++;
+  xcc_secret_free (secret);
+}
+
+void
 __wrap_xcc_ui_failed (XccContext *value, XccUiId id, XccErrorCode error)
 {
   g_assert_true (value == context);
@@ -79,12 +91,22 @@ static void
 complete_pending (Pending *pending)
 {
   Pending saved = *pending;
-  g_autoptr(GTask) result = g_task_new (saved.source, NULL, NULL, NULL);
+  g_autoptr(GMainContext) completion_context = g_main_context_new ();
+  g_autoptr(GTask) result = NULL;
 
   g_assert_nonnull (saved.callback);
   *pending = (Pending) { 0 };
+  /* Mock completions must not dispatch GTK/Wayland events from the default
+   * context while checking the lifetime of a window or prompt. */
+  g_main_context_push_thread_default (completion_context);
+  result = g_task_new (saved.source, NULL, saved.callback, saved.data);
+  g_main_context_pop_thread_default (completion_context);
   g_task_return_boolean (result, TRUE);
-  saved.callback (saved.source, G_ASYNC_RESULT (result), saved.data);
+  /* Dispatch the callback and release the queued task's source reference before
+   * callers check prompt destruction. Calling the callback directly leaves that
+   * reference alive until the main context runs, even without a task callback. */
+  while (!g_task_get_completed (result))
+    g_main_context_iteration (completion_context, TRUE);
   g_clear_object (&saved.source);
 }
 
@@ -124,7 +146,7 @@ const char *
 __wrap_gcr_prompt_password_finish (GcrPrompt *prompt, GAsyncResult *result, GError **error)
 {
   g_assert_true (g_task_propagate_boolean (G_TASK (result), NULL));
-  return NULL;
+  return password_answer;
 }
 
 void
@@ -154,12 +176,21 @@ __wrap_gcr_system_prompt_close_async (GcrSystemPrompt    *prompt,
                                       GAsyncReadyCallback callback,
                                       gpointer            data)
 {
-  save_pending (&close_pending, G_OBJECT (prompt), callback, data);
+  g_assert_true (GCR_IS_SYSTEM_PROMPT (prompt));
+  g_assert_null (closing_prompt);
+  closing_prompt = prompt;
+  g_object_add_weak_pointer (G_OBJECT (prompt), (gpointer *) &closing_prompt);
+  /* Gcr's close result has no source object. */
+  save_pending (&close_pending, NULL, callback, data);
 }
 
 gboolean
 __wrap_gcr_system_prompt_close_finish (GcrSystemPrompt *prompt, GAsyncResult *result, GError **error)
 {
+  g_assert_nonnull (closing_prompt);
+  g_assert_true (prompt == closing_prompt);
+  g_assert_true (GCR_IS_SYSTEM_PROMPT (prompt));
+  g_assert_null (g_task_get_source_object (G_TASK (result)));
   g_assert_true (g_task_propagate_boolean (G_TASK (result), NULL));
   return TRUE;
 }
@@ -197,6 +228,8 @@ dialog_label (CertificateDialog *dialog, const char *name)
 static void
 destroy_chooser (CertificateDialog *dialog)
 {
+  /* Deliver focus-out while the focused child and native surface still exist. */
+  gtk_window_set_focus (GTK_WINDOW (dialog), NULL);
   certificate_dialog_hide (dialog);
   gtk_window_destroy (GTK_WINDOW (dialog));
   g_object_unref (dialog);
@@ -205,6 +238,8 @@ destroy_chooser (CertificateDialog *dialog)
 static void
 destroy_pin (CertificatePinDialog *dialog)
 {
+  /* In particular, detach the password entry from Wayland's active IM context. */
+  gtk_window_set_focus (GTK_WINDOW (dialog), NULL);
   certificate_pin_dialog_hide (dialog);
   gtk_window_destroy (GTK_WINDOW (dialog));
   g_object_unref (dialog);
@@ -523,6 +558,7 @@ test_pending_open (void)
   g_assert_cmpuint (ui_holds, ==, 1);
   complete_pending (&close_pending);
   g_assert_cmpuint (ui_holds, ==, 0);
+  g_assert_null (closing_prompt);
 }
 
 static void
@@ -559,6 +595,52 @@ test_pending_round (gconstpointer data)
   g_assert_cmpuint (ui_holds, ==, 1);
   complete_pending (last);
   g_assert_cmpuint (ui_holds, ==, 0);
+  g_assert_null (closing_prompt);
+}
+
+static void
+test_password_retries (void)
+{
+  XccPinView view = pin_view ();
+  CertificatePinDialog *dialog;
+  GcrPrompt *prompt;
+
+  password_answer = "test";
+  submissions = 0;
+  dialog = g_object_ref_sink (certificate_pin_system_new (context, 1, &view));
+  complete_pending (&open_pending);
+  prompt = GCR_PROMPT (round_pending.source);
+  complete_pending (&round_pending);
+  g_assert_cmpuint (submissions, ==, 1);
+  g_assert_null (round_pending.callback);
+
+  for (guint i = 0; i < 2; i++)
+    {
+      g_autofree char *message = NULL;
+      g_autofree char *warning = NULL;
+
+      view.count_low = TRUE;
+      view.final_try = i == 1;
+      view.status_code = XCC_PIN_STATUS_INCORRECT;
+      certificate_pin_dialog_update (dialog, &view);
+      g_assert_true (round_pending.source == G_OBJECT (prompt));
+      message = gcr_prompt_get_message (prompt);
+      warning = gcr_prompt_get_warning (prompt);
+      g_assert_cmpstr (message, ==, i == 1 ? _("Last PIN attempt") : _("Enter your PIN"));
+      g_assert_cmpstr (warning, ==, i == 1 ? _("Wrong PIN. Another wrong PIN locks the token.") :
+                       _("Wrong PIN. Few attempts may remain."));
+      complete_pending (&round_pending);
+      g_assert_cmpuint (submissions, ==, i + 2);
+      g_assert_null (round_pending.callback);
+    }
+
+  destroy_pin (dialog);
+  g_assert_cmpuint (ui_holds, ==, 1);
+  g_assert_nonnull (closing_prompt);
+  complete_pending (&close_pending);
+  g_assert_null (closing_prompt);
+  g_assert_cmpuint (ui_holds, ==, 0);
+  password_answer = NULL;
 }
 
 int
@@ -578,6 +660,7 @@ main (int argc, char **argv)
   g_test_add_func ("/certificate/window-groups", test_window_groups);
   g_test_add_func ("/certificate/system/pending-open", test_pending_open);
   g_test_add_func ("/certificate/system/open-failure", test_open_failure);
+  g_test_add_func ("/certificate/system/password-retries", test_password_retries);
   g_test_add_data_func ("/certificate/system/password-first", GUINT_TO_POINTER (0), test_pending_round);
   g_test_add_data_func ("/certificate/system/confirm-first", GUINT_TO_POINTER (1), test_pending_round);
   g_test_add_data_func ("/certificate/system/close-before-password", GUINT_TO_POINTER (2), test_pending_round);

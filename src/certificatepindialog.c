@@ -575,18 +575,30 @@ system_opened (GObject      *source,
   g_object_unref (self);
 }
 
+typedef struct
+{
+  GcrSystemPrompt *prompt;
+  CertificatePinDialog *dialog;
+} SystemPinClose;
+
 static void
 system_closed (GObject      *source,
                GAsyncResult *result,
                gpointer      data)
 {
-  gcr_system_prompt_close_finish (GCR_SYSTEM_PROMPT (source), result, NULL);
-  g_object_unref (data);
+  SystemPinClose *close = data;
+
+  gcr_system_prompt_close_finish (close->prompt, result, NULL);
+  g_object_unref (close->prompt);
+  g_object_unref (close->dialog);
+  g_free (close);
 }
 
 static void
 system_release (CertificatePinDialog *self)
 {
+  SystemPinClose *close;
+
   if (self->dismiss_idle != 0)
     {
       g_source_remove (self->dismiss_idle);
@@ -606,8 +618,11 @@ system_release (CertificatePinDialog *self)
       gcr_prompt_close (self->prompt);
     }
   /* Synchronous close leaks a nested GMainContext per prompt on Gcr 4.4. */
+  close = g_new (SystemPinClose, 1);
+  close->prompt = g_object_ref (GCR_SYSTEM_PROMPT (self->prompt));
+  close->dialog = g_object_ref (self);
   gcr_system_prompt_close_async (GCR_SYSTEM_PROMPT (self->prompt), NULL,
-                                 system_closed, g_object_ref (self));
+                                 system_closed, close);
   g_clear_object (&self->prompt);
 }
 

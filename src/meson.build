@@ -179,6 +179,7 @@ if get_option('tests')
         '-Wl,--wrap=xcc_context_hold_ui',
         '-Wl,--wrap=xcc_context_release_ui',
         '-Wl,--wrap=xcc_pin_ready',
+        '-Wl,--wrap=xcc_pin_submit',
         '-Wl,--wrap=xcc_ui_failed',
         '-Wl,--wrap=gcr_system_prompt_open_for_prompter_async',
         '-Wl,--wrap=gcr_system_prompt_open_finish',
